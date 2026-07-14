@@ -15,6 +15,7 @@ var APP = {
     READ_ME: 'Read Me',
     RAW_JSON: 'RAW_JSON',
     APPROVAL_QUEUE: 'Approval Queue',
+    FLOODLIGHT_IMPORT: 'Floodlight Import',
     CONTAINER_INFO: 'Container Info',
     TRIGGER_DIR: 'Trigger Directory',
     TAG_DIR: 'Tag Directory',
@@ -50,6 +51,7 @@ function onOpen() {
   ui.createMenu(APP.MENU)
     .addItem('Open JSON Loader', 'openJsonLoader')
     .addItem('Build Editor Tabs', 'buildEditorTabs')
+    .addItem('Open Floodlight Import Tab', 'openFloodlightImportTab')
     .addItem('Build Preview', 'buildPreview')
     .addItem('Apply Edits & Create Export JSON', 'applyEditsAndCreateExportJson')
     .addSubMenu(approvalQueueMenu)
@@ -109,6 +111,7 @@ function buildEditorTabs() {
   buildAssignmentsCurrentSheet_(cv);
   buildAssignmentsAddSheet_(cv);
   buildBulkRulesSheet_();
+  buildFloodlightImportTab_(cv);
   buildApprovalQueueTab();
   resetPreviewSheet_();
   resetExportSheet_();
@@ -214,6 +217,7 @@ function applyEditsAndCreateExportJson() {
   }
 
   var applyResult = applyOperationsToContainer_(cv, applicableOps);
+  var floodlightResult = applyFloodlightImportsToContainer_(cv);
 
   var jsonOut = JSON.stringify(root, null, 2);
   var driveFile = createDriveJsonFile_(jsonOut);
@@ -221,6 +225,8 @@ function applyEditsAndCreateExportJson() {
     originalTagCount: applyResult.originalTagCount,
     modifiedTagCount: applyResult.modifiedTagCount,
     operationsApplied: applyResult.operationsApplied,
+    floodlightTagsAdded: floodlightResult.added,
+    floodlightRowsSkipped: floodlightResult.skipped,
     warningsApplied: warningsApplied,
     errorsSkipped: errorsSkipped,
     driveFileUrl: driveFile.getUrl()
@@ -229,6 +235,8 @@ function applyEditsAndCreateExportJson() {
   SpreadsheetApp.getUi().alert(
     'Export JSON created successfully.\n\n' +
       'Operations Applied: ' + applyResult.operationsApplied + '\n' +
+      'Floodlight Tags Added: ' + floodlightResult.added + '\n' +
+      'Floodlight Rows Skipped: ' + floodlightResult.skipped + '\n' +
       'Warnings Applied: ' + warningsApplied + '\n' +
       'Errors Skipped: ' + errorsSkipped + '\n' +
       'Drive File: ' + driveFile.getUrl() + '\n\n' +
@@ -257,6 +265,7 @@ function resetEditorWorkspace() {
     APP.SHEETS.ASSIGN_CURRENT,
     APP.SHEETS.ASSIGN_ADD,
     APP.SHEETS.BULK_RULES,
+    APP.SHEETS.FLOODLIGHT_IMPORT,
     APP.SHEETS.EDIT_PREVIEW,
     APP.SHEETS.EXPORT_JSON
   ];
@@ -294,12 +303,13 @@ function rebuildReadMe() {
     ['2) Use "GTM Bulk Editor -> Open JSON Loader" and paste JSON.'],
     ['3) Run "Build Editor Tabs."'],
     ['4) Use row-based edits and/or rule-based edits.'],
-    ['5) Run "Build Preview."'],
-    ['6) Review warnings and errors in Edit Preview.'],
-    ['7) Run "Apply Edits & Create Export JSON."'],
-    ['8) Import modified JSON into a NEW GTM workspace.'],
-    ['9) Choose Merge and overwrite conflicting tags/triggers/variables.'],
-    ['10) Review GTM detailed changes before confirming.'],
+    ['5) Optional: Open Floodlight Import tab and paste DCM floodlight rows to create new GTM Floodlight tags.'],
+    ['6) Run "Build Preview."'],
+    ['7) Review warnings and errors in Edit Preview.'],
+    ['8) Run "Apply Edits & Create Export JSON."'],
+    ['9) Import modified JSON into a NEW GTM workspace.'],
+    ['10) Choose Merge and overwrite conflicting tags/triggers/variables.'],
+    ['11) Review GTM detailed changes before confirming.'],
     [''],
     ['Important Notes'],
     ['- Original pasted JSON remains source of truth.'],
@@ -726,6 +736,65 @@ function buildBulkRulesSheet_() {
     }
     sheet.getRange(2, 8, starterRows, 1).setFormulas(formulas);
   }
+}
+
+function openFloodlightImportTab() {
+  ensureCoreSheets_();
+
+  var parsed = getParsedRootFromRawSheet_();
+  var cv = parsed.containerVersion;
+  validateContainerCore_(cv);
+
+  buildFloodlightImportTab_(cv);
+  SpreadsheetApp.getActive().setActiveSheet(getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW));
+}
+
+function buildFloodlightImportTab_(cv) {
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW);
+  sheet.clear();
+
+  var template = findFloodlightTemplateTag_(cv, '');
+  var templateId = template ? toId_(template.tagId) : '';
+  var templateName = template ? asValue_(template.name) : '(no floodlight template tag found in container)';
+
+  var infoRows = [
+    ['Instructions', 'Paste one floodlight per row. Required: Floodlight Name + Activity ID.'],
+    ['Default Template Tag ID', templateId],
+    ['Default Template Tag Name', templateName],
+    ['Trigger IDs Format', 'Comma-separated trigger IDs, for example: 2147480021,2147480179'],
+    ['Blocking Trigger IDs Format', 'Comma-separated trigger IDs, optional']
+  ];
+  sheet.getRange(1, 1, infoRows.length, 2).setValues(infoRows);
+  sheet.getRange(1, 1, infoRows.length, 1).setFontWeight('bold');
+
+  var headers = [
+    'Enabled',
+    'Floodlight Name',
+    'Activity ID',
+    'Trigger IDs',
+    'Blocking Trigger IDs',
+    'Folder ID',
+    'Template Tag ID',
+    'Custom URL Override',
+    'Notes',
+    'Result'
+  ];
+
+  sheet.getRange(7, 1, 1, headers.length).setValues([headers]);
+  formatHeaderRow_(sheet, 7, headers.length);
+
+  var starterRows = 200;
+  var values = [];
+  for (var i = 0; i < starterRows; i++) {
+    values.push([true, '', '', '', '', '', '', '', '', '']);
+  }
+  sheet.getRange(8, 1, starterRows, headers.length).setValues(values);
+  sheet.getRange(8, 1, starterRows, 1).insertCheckboxes();
+
+  sheet.setFrozenRows(7);
+  if (sheet.getFilter()) sheet.getFilter().remove();
+  sheet.getRange(7, 1, starterRows + 1, headers.length).createFilter();
+  sheet.autoResizeColumns(1, headers.length);
 }
 
 function openApprovalQueueLoader() {
@@ -1830,6 +1899,178 @@ function applyOperationsToContainer_(cv, operations) {
   };
 }
 
+function applyFloodlightImportsToContainer_(cv) {
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW);
+  if (sheet.getLastRow() < 8) {
+    return { added: 0, skipped: 0 };
+  }
+
+  var data = getFloodlightImportTableData_(sheet);
+  if (data.headers.length < 1 || data.headers[0] !== 'Enabled') {
+    return { added: 0, skipped: 0 };
+  }
+
+  var h = indexHeaders_(data.headers);
+  var tags = asArray_(cv.tag);
+  cv.tag = tags;
+
+  var maxTagId = getMaxNumericTagId_(tags);
+  var added = 0;
+  var skipped = 0;
+
+  data.rows.forEach(function(row, idx) {
+    var rowNumber = idx + 2;
+    var enabled = toBoolean_(row[h['Enabled']]);
+    if (!enabled) return;
+
+    var name = String(row[h['Floodlight Name']] || '').trim();
+    var activityId = String(row[h['Activity ID']] || '').trim();
+    var templateTagId = String(row[h['Template Tag ID']] || '').trim();
+    var customUrl = String(row[h['Custom URL Override']] || '').trim();
+    var folderId = String(row[h['Folder ID']] || '').trim();
+
+    if (!name || !activityId) {
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: Floodlight Name and Activity ID are required.');
+      skipped++;
+      return;
+    }
+
+    var templateTag = findFloodlightTemplateTag_(cv, templateTagId);
+    if (!templateTag) {
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: No Floodlight template tag found. Provide Template Tag ID or include one in container JSON.');
+      skipped++;
+      return;
+    }
+
+    var newTag = cloneObject_(templateTag);
+    maxTagId++;
+    newTag.tagId = String(maxTagId);
+    newTag.name = name;
+
+    if (folderId) {
+      newTag.parentFolderId = folderId;
+    }
+
+    var firingIds = parseCsvIds_(row[h['Trigger IDs']]);
+    var blockingIds = parseCsvIds_(row[h['Blocking Trigger IDs']]);
+    newTag.firingTriggerId = firingIds;
+    newTag.blockingTriggerId = blockingIds;
+
+    setTagParameterValue_(newTag, 'activityTag', activityId);
+    setTagParameterValueIfExists_(newTag, 'activityId', activityId);
+    if (customUrl) {
+      setTagParameterValue_(newTag, 'customUrl', customUrl);
+    }
+
+    tags.push(newTag);
+    setFloodlightImportResult_(sheet, rowNumber, h, 'Added: Tag ID ' + newTag.tagId);
+    added++;
+  });
+
+  return {
+    added: added,
+    skipped: skipped
+  };
+}
+
+function getFloodlightImportTableData_(sheet) {
+  var headerRow = 7;
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+
+  if (lastRow < headerRow || lastCol < 1) {
+    return { headers: [], rows: [] };
+  }
+
+  var headers = sheet.getRange(headerRow, 1, 1, lastCol).getValues()[0].map(function(v) {
+    return String(v || '').trim();
+  });
+
+  if (lastRow <= headerRow) {
+    return { headers: headers, rows: [] };
+  }
+
+  var rows = sheet.getRange(headerRow + 1, 1, lastRow - headerRow, lastCol).getValues();
+  return {
+    headers: headers,
+    rows: rows
+  };
+}
+
+function getMaxNumericTagId_(tags) {
+  var maxId = 0;
+  asArray_(tags).forEach(function(tag) {
+    var n = Number(toId_(tag && tag.tagId));
+    if (isFinite(n) && n > maxId) maxId = n;
+  });
+  return maxId;
+}
+
+function findFloodlightTemplateTag_(cv, preferredTagId) {
+  var tags = asArray_(cv.tag);
+  var preferred = toId_(preferredTagId);
+  if (preferred) {
+    for (var i = 0; i < tags.length; i++) {
+      if (toId_(tags[i].tagId) === preferred) return tags[i];
+    }
+  }
+
+  for (var j = 0; j < tags.length; j++) {
+    if (String(tags[j].type || '').toLowerCase() === 'flc') return tags[j];
+  }
+  return null;
+}
+
+function setFloodlightImportResult_(sheet, rowNumber, headerIndex, message) {
+  if (headerIndex['Result'] === undefined) return;
+  var col = headerIndex['Result'] + 1;
+  sheet.getRange(rowNumber, col).setValue(message);
+}
+
+function parseCsvIds_(value) {
+  return String(value || '')
+    .split(',')
+    .map(function(part) { return toId_(part); })
+    .filter(function(id) { return !!id; });
+}
+
+function cloneObject_(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function setTagParameterValue_(tag, key, value) {
+  if (!tag.parameter || !Array.isArray(tag.parameter)) {
+    tag.parameter = [];
+  }
+
+  for (var i = 0; i < tag.parameter.length; i++) {
+    var p = tag.parameter[i];
+    if (String(p && p.key || '') === key) {
+      p.value = String(value || '');
+      if (!p.type) p.type = 'template';
+      return;
+    }
+  }
+
+  tag.parameter.push({
+    type: 'template',
+    key: key,
+    value: String(value || '')
+  });
+}
+
+function setTagParameterValueIfExists_(tag, key, value) {
+  var params = tag && tag.parameter;
+  if (!params || !Array.isArray(params)) return;
+
+  for (var i = 0; i < params.length; i++) {
+    if (String(params[i] && params[i].key || '') === key) {
+      params[i].value = String(value || '');
+      return;
+    }
+  }
+}
+
 function writeExportSheet_(jsonOut, summary) {
   var sheet = getOrCreateSheet_(APP.SHEETS.EXPORT_JSON, APP.TAB_COLORS.GREEN);
   sheet.clear();
@@ -1840,6 +2081,8 @@ function writeExportSheet_(jsonOut, summary) {
     'Original Tag Count',
     'Modified Tag Count',
     'Operations Applied',
+    'Floodlight Tags Added',
+    'Floodlight Rows Skipped',
     'Warnings Applied',
     'Errors Skipped',
     'Drive File URL',
@@ -1855,6 +2098,8 @@ function writeExportSheet_(jsonOut, summary) {
     summary.originalTagCount,
     summary.modifiedTagCount,
     summary.operationsApplied,
+    summary.floodlightTagsAdded || 0,
+    summary.floodlightRowsSkipped || 0,
     summary.warningsApplied,
     summary.errorsSkipped,
     summary.driveFileUrl,
@@ -1868,8 +2113,8 @@ function writeExportSheet_(jsonOut, summary) {
   });
 
   if (chunkRows.length) {
-    sheet.getRange(4, 9, chunkRows.length, 1).setValues(chunkRows);
-    sheet.getRange(4, 9, chunkRows.length, 1).setNumberFormat('@STRING@');
+    sheet.getRange(4, 11, chunkRows.length, 1).setValues(chunkRows);
+    sheet.getRange(4, 11, chunkRows.length, 1).setNumberFormat('@STRING@');
   }
 
   sheet.setFrozenRows(1);
