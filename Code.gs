@@ -10,6 +10,7 @@
 
 var APP = {
   MENU: 'GTM Bulk Editor',
+  EXPORT_FOLDER_ID: '1Ueh9BvfaEES5ns9W3uFXSWSgPp2Km5SG',
   SHEETS: {
     READ_ME: 'Read Me',
     RAW_JSON: 'RAW_JSON',
@@ -1345,7 +1346,19 @@ function writeExportSheet_(jsonOut, summary) {
 function createDriveJsonFile_(jsonOut) {
   var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd-HHmmss');
   var name = 'gtm-bulk-edited-container-' + stamp + '.json';
-  return DriveApp.createFile(name, jsonOut, MimeType.PLAIN_TEXT);
+  var file = DriveApp.createFile(name, jsonOut, MimeType.PLAIN_TEXT);
+
+  var folder = DriveApp.getFolderById(APP.EXPORT_FOLDER_ID);
+  folder.addFile(file);
+
+  var rootFolder = DriveApp.getRootFolder();
+  try {
+    rootFolder.removeFile(file);
+  } catch (err) {
+    // Ignore if the file was not added to My Drive root or removal is restricted.
+  }
+
+  return file;
 }
 
 // ---------------------------
