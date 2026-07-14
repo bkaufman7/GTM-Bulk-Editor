@@ -14,6 +14,7 @@ var APP = {
   SHEETS: {
     READ_ME: 'Read Me',
     RAW_JSON: 'RAW_JSON',
+    APPROVAL_QUEUE: 'Approval Queue',
     CONTAINER_INFO: 'Container Info',
     TRIGGER_DIR: 'Trigger Directory',
     TAG_DIR: 'Tag Directory',
@@ -36,12 +37,19 @@ var APP = {
 };
 
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu(APP.MENU)
+  var ui = SpreadsheetApp.getUi();
+
+  var approvalQueueMenu = ui.createMenu('Approval Queue')
+    .addItem('Open Queue Loader', 'openApprovalQueueLoader')
+    .addItem('Build Queue Tab', 'buildApprovalQueueTab')
+    .addItem('Apply Queue Decisions', 'applyApprovalQueueDecisions');
+
+  ui.createMenu(APP.MENU)
     .addItem('Open JSON Loader', 'openJsonLoader')
     .addItem('Build Editor Tabs', 'buildEditorTabs')
     .addItem('Build Preview', 'buildPreview')
     .addItem('Apply Edits & Create Export JSON', 'applyEditsAndCreateExportJson')
+    .addSubMenu(approvalQueueMenu)
     .addSeparator()
     .addItem('Reset Editor Workspace', 'resetEditorWorkspace')
     .addItem('Rebuild Read Me', 'rebuildReadMe')
@@ -98,6 +106,7 @@ function buildEditorTabs() {
   buildAssignmentsCurrentSheet_(cv);
   buildAssignmentsAddSheet_(cv);
   buildBulkRulesSheet_();
+  buildApprovalQueueTab();
   resetPreviewSheet_();
   resetExportSheet_();
 
@@ -261,6 +270,8 @@ function resetEditorWorkspace() {
     setupRawJsonSheet_(rawSheet);
   }
 
+  safeDeleteSheet_(APP.SHEETS.APPROVAL_QUEUE);
+
   ui.alert('Workspace reset complete.');
 }
 
@@ -297,6 +308,7 @@ function rebuildReadMe() {
     ['- No live GTM API calls.'],
     ['- No publishing workflow.'],
     ['- No trigger deletion module.'],
+    ['- Approval Queue tab is a decision workspace only until live API support is added.'],
     ['- No edits to trigger definitions, tag parameters, variables, folders, templates, consent settings.'],
     ['- Server-side GTM differences are only supported if export JSON is structurally compatible.'],
     ['- Ambiguous trigger names are not auto-resolved. Use Trigger ID.']
@@ -711,6 +723,216 @@ function buildBulkRulesSheet_() {
     }
     sheet.getRange(2, 8, starterRows, 1).setFormulas(formulas);
   }
+}
+
+function openApprovalQueueLoader() {
+  ensureCoreSheets_();
+  var html = HtmlService.createHtmlOutput(getApprovalQueueLoaderHtml_())
+    .setTitle('Approval Queue Loader')
+    .setWidth(420);
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+
+function saveApprovalQueueFromSidebar(rawText) {
+  if (!rawText || !String(rawText).trim()) {
+    throw new Error('No queue text provided. Paste copied approval queue rows and try again.');
+  }
+
+  var rows = parseApprovalQueuePaste_(rawText);
+  buildApprovalQueueTab(rows);
+
+  return {
+    success: true,
+    message: 'Approval Queue pasted successfully. Use the new Approval Queue menu to review decisions.'
+  };
+}
+
+function buildApprovalQueueTab(rows) {
+  var sheet = getOrCreateSheet_(APP.SHEETS.APPROVAL_QUEUE, APP.TAB_COLORS.PURPLE);
+  sheet.clear();
+
+  var headers = [
+    'Select',
+    'Action',
+    'Queue Item ID',
+    'Name',
+    'Type',
+    'Status',
+    'Assigned To',
+    'Requested By',
+    'Request Date',
+    'Result',
+    'Notes'
+  ];
+
+  var dataRows = rows || [];
+  if (!dataRows.length) {
+    dataRows = buildEmptyApprovalQueueRows_();
+  }
+
+  writeTableSheet_(sheet, headers, dataRows, APP.TAB_COLORS.PURPLE);
+
+  var rowCount = dataRows.length;
+  if (rowCount) {
+    sheet.getRange(2, 1, rowCount, 1).insertCheckboxes();
+
+    var actionRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Approve', 'Reject'], true)
+      .setAllowInvalid(false)
+      .build();
+
+    sheet.getRange(2, 2, rowCount, 1).setDataValidation(actionRule);
+    sheet.getRange(2, 2, rowCount, 1).setValues(dataRows.map(function(r) { return [r[1] || 'Approve']; }));
+  }
+
+  sheet.setFrozenRows(1);
+  if (sheet.getFilter()) sheet.getFilter().remove();
+  sheet.getRange(1, 1, Math.max(2, rowCount + 1), headers.length).createFilter();
+  sheet.autoResizeColumns(1, headers.length);
+  sheet.setTabColor(APP.TAB_COLORS.PURPLE);
+}
+
+function applyApprovalQueueDecisions() {
+  var sheet = getOrCreateSheet_(APP.SHEETS.APPROVAL_QUEUE, APP.TAB_COLORS.PURPLE);
+  var data = getSheetData_(sheet);
+  var h = indexHeaders_(data.headers);
+  var applied = 0;
+
+  data.rows.forEach(function(row, idx) {
+    if (!toBoolean_(row[h['Select']])) return;
+    var action = String(row[h['Action']] || '').toUpperCase();
+    if (action !== 'APPROVE' && action !== 'REJECT') return;
+
+    row[h['Result']] = action + ' (queued for future GTM API integration)';
+    applied++;
+  });
+
+  if (applied) {
+    sheet.getRange(2, 1, data.rows.length, data.headers.length).setValues(data.rows);
+  }
+
+  SpreadsheetApp.getUi().alert(
+    'Approval Queue decisions updated on the sheet.\n\n' +
+      'This version records approve/reject decisions in the queue tab only. Live GTM API execution can be added later.'
+  );
+}
+
+function buildEmptyApprovalQueueRows_() {
+  return [
+    [false, 'Approve', '5082235', 'test00 - bulk test5', 'Tag', 'Pending', 'Any approver', '', '11 minutes ago', '', ''],
+    [false, 'Approve', '5088496', 'test00 - bulk test7', 'Tag', 'Pending', 'Any approver', '', '11 minutes ago', '', '']
+  ];
+}
+
+function parseApprovalQueuePaste_(rawText) {
+  var text = String(rawText || '').trim();
+  if (!text) return [];
+
+  var lines = text.split(/\r?\n/).map(function(line) { return line.trim(); }).filter(function(line) { return !!line; });
+  if (lines.length < 2) return [];
+
+  var delimiter = lines[0].indexOf('\t') !== -1 ? '\t' : ',';
+  var headers = splitDelimitedLine_(lines[0], delimiter);
+  var col = indexHeaders_(headers.map(function(h) { return String(h || '').trim(); }));
+
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    var parts = splitDelimitedLine_(lines[i], delimiter);
+    var name = getDelimitedValue_(parts, col, 'Name');
+    var type = getDelimitedValue_(parts, col, 'Type');
+    var status = getDelimitedValue_(parts, col, 'Status');
+    var assignedTo = getDelimitedValue_(parts, col, 'Assigned To');
+    var requestedBy = getDelimitedValue_(parts, col, 'Requested By');
+    var requestDate = getDelimitedValue_(parts, col, 'Request Date');
+    var queueItemId = extractQueueItemIdFromText_(lines[i]);
+
+    rows.push([
+      false,
+      'Approve',
+      queueItemId,
+      name,
+      type,
+      status,
+      assignedTo,
+      requestedBy,
+      requestDate,
+      '',
+      ''
+    ]);
+  }
+
+  return rows;
+}
+
+function splitDelimitedLine_(line, delimiter) {
+  return String(line || '').split(delimiter).map(function(part) {
+    return String(part || '').trim();
+  });
+}
+
+function getDelimitedValue_(parts, headerIndex, headerName) {
+  var idx = headerIndex[headerName];
+  if (idx === undefined || idx === null) return '';
+  return String(parts[idx] || '').trim();
+}
+
+function extractQueueItemIdFromText_(text) {
+  var match = String(text || '').match(/\/approvals\/(\d+)/);
+  return match ? match[1] : '';
+}
+
+function getApprovalQueueLoaderHtml_() {
+  return [
+    '<!DOCTYPE html>',
+    '<html>',
+    '<head>',
+    '  <meta charset="utf-8" />',
+    '  <style>',
+    '    body { font-family: Arial, sans-serif; margin: 12px; color: #1f2937; }',
+    '    h2 { font-size: 15px; margin: 0 0 10px; }',
+    '    p { font-size: 12px; margin: 0 0 10px; color: #4b5563; }',
+    '    textarea { width: 100%; min-height: 340px; border: 1px solid #d1d5db; border-radius: 6px; padding: 8px; font-family: Consolas, monospace; font-size: 11px; }',
+    '    .row { margin-top: 10px; display: flex; gap: 8px; }',
+    '    button { border: 0; background: #2563eb; color: #fff; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }',
+    '    button.secondary { background: #6b7280; }',
+    '    .msg { margin-top: 10px; font-size: 12px; white-space: pre-wrap; }',
+    '  </style>',
+    '</head>',
+    '<body>',
+    '  <h2>Approval Queue Loader</h2>',
+    '  <p>Paste copied approval queue rows here. The sheet will extract Queue Item ID and let you bulk approve or reject decisions.</p>',
+    '  <textarea id="queueInput" placeholder="Paste approval queue rows here..."></textarea>',
+    '  <div class="row">',
+    '    <button onclick="saveQueue()">Save to Approval Queue</button>',
+    '    <button class="secondary" onclick="clearText()">Clear</button>',
+    '  </div>',
+    '  <div id="msg" class="msg"></div>',
+    '  <script>',
+    '    function setMsg(text, isError) {',
+    '      var el = document.getElementById("msg");',
+    '      el.style.color = isError ? "#b91c1c" : "#065f46";',
+    '      el.textContent = text || "";',
+    '    }',
+    '    function clearText() {',
+    '      document.getElementById("queueInput").value = "";',
+    '      setMsg("", false);',
+    '    }',
+    '    function saveQueue() {',
+    '      var text = document.getElementById("queueInput").value || "";',
+    '      setMsg("Saving...", false);',
+    '      google.script.run',
+    '        .withSuccessHandler(function(res) {',
+    '          setMsg((res && res.message) ? res.message : "Saved.", false);',
+    '        })',
+    '        .withFailureHandler(function(err) {',
+    '          setMsg((err && err.message) ? err.message : String(err), true);',
+    '        })',
+    '        .saveApprovalQueueFromSidebar(text);',
+    '    }',
+    '  </script>',
+    '</body>',
+    '</html>'
+  ].join('\n');
 }
 
 function resetPreviewSheet_() {
