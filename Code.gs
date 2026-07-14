@@ -41,6 +41,7 @@ function onOpen() {
 
   var approvalQueueMenu = ui.createMenu('Approval Queue')
     .addItem('Open Queue Loader', 'openApprovalQueueLoader')
+    .addItem('Import From Selected Cells', 'importApprovalQueueFromSelection')
     .addItem('Build Queue Tab', 'buildApprovalQueueTab')
     .addItem('Apply Queue Decisions', 'applyApprovalQueueDecisions')
     .addSeparator()
@@ -752,6 +753,26 @@ function saveApprovalQueueFromSidebar(rawText) {
   };
 }
 
+function importApprovalQueueFromSelection() {
+  var range = SpreadsheetApp.getActiveRange();
+  if (!range) {
+    throw new Error('No range selected. Select the cells containing copied queue rows, then run this action again.');
+  }
+
+  var richValues = range.getRichTextValues();
+  var displayValues = range.getDisplayValues();
+  var rows = parseApprovalQueueSelection_(richValues, displayValues);
+
+  if (!rows.length) {
+    throw new Error(
+      'No approval queue hyperlinks were found in the selected cells. Select cells that contain GTM approvals links and try again.'
+    );
+  }
+
+  buildApprovalQueueTab(rows);
+  SpreadsheetApp.getUi().alert('Approval Queue imported from selected cells. Parsed rows: ' + rows.length + '.');
+}
+
 function buildApprovalQueueTab(rows) {
   var sheet = getOrCreateSheet_(APP.SHEETS.APPROVAL_QUEUE, APP.TAB_COLORS.PURPLE);
   sheet.clear();
@@ -948,6 +969,118 @@ function parseApprovalQueuePaste_(rawText) {
   }
 
   return rows;
+}
+
+function parseApprovalQueueSelection_(richValues, displayValues) {
+  var rows = [];
+  var seenIds = {};
+
+  for (var r = 0; r < richValues.length; r++) {
+    for (var c = 0; c < richValues[r].length; c++) {
+      var richCell = richValues[r][c];
+      var displayText = String((displayValues[r] && displayValues[r][c]) || '').trim();
+      if (!displayText) continue;
+
+      var linkedItems = extractApprovalLinksFromRichTextCell_(richCell, displayText);
+      if (linkedItems.length) {
+        for (var i = 0; i < linkedItems.length; i++) {
+          var item = linkedItems[i];
+          if (!item.queueItemId || seenIds[item.queueItemId]) continue;
+          rows.push(createApprovalQueueRow_(item.queueItemId, item.name, item.suffix));
+          seenIds[item.queueItemId] = true;
+        }
+        continue;
+      }
+
+      var fallbackId = extractQueueItemIdFromText_(displayText);
+      if (fallbackId && !seenIds[fallbackId]) {
+        rows.push(createApprovalQueueRow_(fallbackId, displayText, ''));
+        seenIds[fallbackId] = true;
+      }
+    }
+  }
+
+  return rows;
+}
+
+function extractApprovalLinksFromRichTextCell_(richTextValue, fullText) {
+  var items = [];
+  if (!richTextValue) return items;
+
+  var runs = richTextValue.getRuns();
+  if (!runs || !runs.length) {
+    var singleUrl = richTextValue.getLinkUrl();
+    var singleId = extractQueueItemIdFromText_(singleUrl || fullText);
+    if (!singleId) return items;
+
+    var normalizedText = String(fullText || '').replace(/\s+/g, ' ').trim();
+    var parsedName = normalizedText;
+    var suffix = '';
+    var split = normalizedText.match(/^(.*?)(\bTag\b|\bTrigger\b|\bPending\b|\bApproved\b|\bRejected\b.*)$/i);
+    if (split) {
+      parsedName = String(split[1] || '').trim() || normalizedText;
+      suffix = String(split[2] || '').trim();
+    }
+
+    items.push({
+      queueItemId: singleId,
+      name: parsedName,
+      suffix: suffix
+    });
+    return items;
+  }
+
+  var linkRuns = [];
+  var pos = 0;
+  for (var i = 0; i < runs.length; i++) {
+    var run = runs[i];
+    var runText = String(run.getText() || '');
+    var start = pos;
+    var end = start + runText.length;
+    pos = end;
+
+    var url = run.getLinkUrl();
+    var queueItemId = extractQueueItemIdFromText_(url || runText);
+    if (!queueItemId) continue;
+
+    linkRuns.push({
+      start: start,
+      end: end,
+      text: runText,
+      queueItemId: queueItemId
+    });
+  }
+
+  for (var j = 0; j < linkRuns.length; j++) {
+    var current = linkRuns[j];
+    var next = linkRuns[j + 1];
+    var suffix = String(fullText || '').substring(current.end, next ? next.start : String(fullText || '').length).trim();
+
+    items.push({
+      queueItemId: current.queueItemId,
+      name: String(current.text || '').trim(),
+      suffix: suffix
+    });
+  }
+
+  return items;
+}
+
+function createApprovalQueueRow_(queueItemId, name, suffix) {
+  var parsed = parseApprovalQueueSuffix_(suffix || '');
+  return [
+    false,
+    'Approve',
+    String(queueItemId || '').trim(),
+    String(name || '').trim(),
+    parsed.type || 'Tag',
+    parsed.status || 'Pending',
+    parsed.assignedTo || 'Any approver',
+    parsed.requestedBy || '',
+    parsed.requestDate || '',
+    '',
+    ''
+  ];
 }
 
 function parseApprovalQueueMarkdownRows_(text) {
