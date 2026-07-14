@@ -2395,8 +2395,8 @@ function applyFloodlightTransactionFields_(tag, fields) {
   }
 
   if (transactionIdVariable) {
-    setTagParameterValueByCandidates_(tag, ['transactionId', 'transaction_id', 'ord'], transactionIdVariable);
-    setVendorTemplateParameterByCandidates_(tag, ['transactionId', 'transaction_id', 'ord'], transactionIdVariable, false);
+    setTagParameterValueByCandidates_(tag, ['transactionId', 'transaction_id', 'orderId', 'ord'], transactionIdVariable);
+    setVendorTemplateParameterByCandidates_(tag, ['transactionId', 'transaction_id', 'orderId', 'ord'], transactionIdVariable, false);
   }
 
   if (quantityVariable) {
@@ -2407,8 +2407,10 @@ function applyFloodlightTransactionFields_(tag, fields) {
   // Always set canonical Floodlight keys for transaction-based counting types.
   if (ordinalType === 'TRANSACTIONS' || ordinalType === 'ITEM_SOLD') {
     setTagParameterValue_(tag, 'revenue', valueFallback);
+    setTagParameterValue_(tag, 'orderId', txFallback);
     setTagParameterValue_(tag, 'ord', txFallback);
     setVendorTemplateParameterByCandidates_(tag, ['revenue'], valueFallback, false);
+    setVendorTemplateParameterByCandidates_(tag, ['orderId'], txFallback, false);
     setVendorTemplateParameterByCandidates_(tag, ['ord'], txFallback, false);
   }
 
@@ -2420,7 +2422,7 @@ function applyFloodlightTransactionFields_(tag, fields) {
   // Some vendor-template floodlight tags require non-empty values for these keys.
   // Backfill defaults only when keys already exist and are empty.
   setVendorTemplateParameterByCandidates_(tag, ['revenue', 'cost', 'value'], valueFallback, true);
-  setVendorTemplateParameterByCandidates_(tag, ['ord', 'transactionId', 'transaction_id'], txFallback, true);
+  setVendorTemplateParameterByCandidates_(tag, ['ord', 'orderId', 'transactionId', 'transaction_id'], txFallback, true);
   setVendorTemplateParameterByCandidates_(tag, ['qty', 'quantity'], qtyFallback, true);
 }
 
