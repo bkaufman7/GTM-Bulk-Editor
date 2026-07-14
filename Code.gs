@@ -52,6 +52,7 @@ function onOpen() {
     .addItem('Open JSON Loader', 'openJsonLoader')
     .addItem('Build Editor Tabs', 'buildEditorTabs')
     .addItem('Open Floodlight Import Tab', 'openFloodlightImportTab')
+    .addItem('Import DCM Floodlights From Selection', 'importDcmFloodlightsFromSelection')
     .addItem('Build Preview', 'buildPreview')
     .addItem('Apply Edits & Create Export JSON', 'applyEditsAndCreateExportJson')
     .addSubMenu(approvalQueueMenu)
@@ -749,6 +750,34 @@ function openFloodlightImportTab() {
   SpreadsheetApp.getActive().setActiveSheet(getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW));
 }
 
+function importDcmFloodlightsFromSelection() {
+  ensureCoreSheets_();
+
+  var range = SpreadsheetApp.getActiveRange();
+  if (!range) {
+    throw new Error('No range selected. Select copied DCM TagSheet rows first, then run this action again.');
+  }
+
+  var parsed = getParsedRootFromRawSheet_();
+  var cv = parsed.containerVersion;
+  validateContainerCore_(cv);
+
+  buildFloodlightImportTab_(cv);
+
+  var values = range.getDisplayValues();
+  var importRows = parseDcmSelectionToFloodlightRows_(values);
+  if (!importRows.length) {
+    throw new Error('No DCM rows parsed. Select rows that include Activity Name and Event Snippet (or send_to details).');
+  }
+
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW);
+  var startRow = findFirstEmptyFloodlightImportRow_(sheet);
+  sheet.getRange(startRow, 1, importRows.length, importRows[0].length).setValues(importRows);
+
+  SpreadsheetApp.getActive().setActiveSheet(sheet);
+  SpreadsheetApp.getUi().alert('Imported DCM rows into Floodlight Import tab: ' + importRows.length + '.');
+}
+
 function buildFloodlightImportTab_(cv) {
   var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW);
   sheet.clear();
@@ -758,9 +787,10 @@ function buildFloodlightImportTab_(cv) {
   var templateName = template ? asValue_(template.name) : '(no floodlight template tag found in container)';
 
   var infoRows = [
-    ['Instructions', 'Paste one floodlight per row. Required: Floodlight Name + Activity ID.'],
+    ['Instructions', 'Paste one floodlight per row. Required: Floodlight Name + Activity Tag.'],
     ['Default Template Tag ID', templateId],
     ['Default Template Tag Name', templateName],
+    ['DCM Import Tip', 'Use GTM Bulk Editor > Import DCM Floodlights From Selection after selecting rows from a DCM TagSheet paste.'],
     ['Trigger IDs Format', 'Comma-separated trigger IDs, for example: 2147480021,2147480179'],
     ['Blocking Trigger IDs Format', 'Comma-separated trigger IDs, optional']
   ];
@@ -770,7 +800,11 @@ function buildFloodlightImportTab_(cv) {
   var headers = [
     'Enabled',
     'Floodlight Name',
-    'Activity ID',
+    'Activity Tag',
+    'Group Tag',
+    'Ordinal Type',
+    'Session ID',
+    'Custom Variables JSON',
     'Trigger IDs',
     'Blocking Trigger IDs',
     'Folder ID',
@@ -1924,13 +1958,17 @@ function applyFloodlightImportsToContainer_(cv) {
     if (!enabled) return;
 
     var name = String(row[h['Floodlight Name']] || '').trim();
-    var activityId = String(row[h['Activity ID']] || '').trim();
+    var activityTag = String(row[h['Activity Tag']] || '').trim();
+    var groupTag = String(row[h['Group Tag']] || '').trim();
+    var ordinalType = String(row[h['Ordinal Type']] || '').trim();
+    var sessionId = String(row[h['Session ID']] || '').trim();
+    var customVarsJson = String(row[h['Custom Variables JSON']] || '').trim();
     var templateTagId = String(row[h['Template Tag ID']] || '').trim();
     var customUrl = String(row[h['Custom URL Override']] || '').trim();
     var folderId = String(row[h['Folder ID']] || '').trim();
 
-    if (!name || !activityId) {
-      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: Floodlight Name and Activity ID are required.');
+    if (!name || !activityTag) {
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: Floodlight Name and Activity Tag are required.');
       skipped++;
       return;
     }
@@ -1956,8 +1994,12 @@ function applyFloodlightImportsToContainer_(cv) {
     newTag.firingTriggerId = firingIds;
     newTag.blockingTriggerId = blockingIds;
 
-    setTagParameterValue_(newTag, 'activityTag', activityId);
-    setTagParameterValueIfExists_(newTag, 'activityId', activityId);
+    setTagParameterValue_(newTag, 'activityTag', activityTag);
+    if (groupTag) setTagParameterValue_(newTag, 'groupTag', groupTag);
+    if (ordinalType) setTagParameterValue_(newTag, 'ordinalType', ordinalType);
+    if (sessionId) setTagParameterValue_(newTag, 'sessionId', sessionId);
+
+    applyFloodlightCustomVariables_(newTag, customVarsJson);
     if (customUrl) {
       setTagParameterValue_(newTag, 'customUrl', customUrl);
     }
@@ -1971,6 +2013,154 @@ function applyFloodlightImportsToContainer_(cv) {
     added: added,
     skipped: skipped
   };
+}
+
+function parseDcmSelectionToFloodlightRows_(values) {
+  if (!values || !values.length) return [];
+
+  var header = values[0] || [];
+  var hasHeader = isDcmHeaderRow_(header);
+  var rows = [];
+
+  var idx = hasHeader ? indexDcmHeaders_(header) : {
+    activityId: 1,
+    activityName: 2,
+    groupName: 3,
+    expectedUrl: 4,
+    eventSnippet: 7
+  };
+
+  for (var r = hasHeader ? 1 : 0; r < values.length; r++) {
+    var row = values[r] || [];
+    var name = String(row[idx.activityName] || '').trim();
+    var group = String(row[idx.groupName] || '').trim();
+    var eventSnippet = String(row[idx.eventSnippet] || '').trim();
+
+    if (!name && !eventSnippet) continue;
+
+    var parsed = parseDcmEventSnippet_(eventSnippet);
+    var activityTag = parsed.activityTag || '';
+    var groupTag = parsed.groupTag || group || '';
+    var ordinalType = parsed.ordinalType || '';
+    var sessionId = parsed.sessionId || '';
+    var customVarsJson = stringifyCustomVars_(parsed.customVars);
+
+    rows.push([
+      true,
+      name,
+      activityTag,
+      groupTag,
+      ordinalType,
+      sessionId,
+      customVarsJson,
+      '',
+      '',
+      '',
+      '',
+      '',
+      'Imported from DCM selection',
+      ''
+    ]);
+  }
+
+  return rows;
+}
+
+function isDcmHeaderRow_(row) {
+  var joined = (row || []).join(' ').toLowerCase();
+  return joined.indexOf('activity id') !== -1 && joined.indexOf('activity name') !== -1;
+}
+
+function indexDcmHeaders_(headerRow) {
+  var index = {
+    activityId: 1,
+    activityName: 2,
+    groupName: 3,
+    expectedUrl: 4,
+    eventSnippet: 7
+  };
+
+  for (var i = 0; i < headerRow.length; i++) {
+    var h = String(headerRow[i] || '').trim().toLowerCase();
+    if (h === 'activity id') index.activityId = i;
+    if (h === 'activity name') index.activityName = i;
+    if (h === 'group name') index.groupName = i;
+    if (h === 'expected url') index.expectedUrl = i;
+    if (h === 'event snippet') index.eventSnippet = i;
+  }
+
+  return index;
+}
+
+function parseDcmEventSnippet_(snippet) {
+  var text = String(snippet || '');
+  var out = {
+    groupTag: '',
+    activityTag: '',
+    ordinalType: '',
+    sessionId: '',
+    customVars: {}
+  };
+
+  var sendToMatch = text.match(/'send_to'\s*:\s*'DC-[^\/]+\/([^\/]+)\/([^+']+)\+([^']+)'/i);
+  if (sendToMatch) {
+    out.groupTag = String(sendToMatch[1] || '').trim();
+    out.activityTag = String(sendToMatch[2] || '').trim();
+    out.ordinalType = mapDcmCountingTypeToOrdinal_(String(sendToMatch[3] || '').trim());
+  }
+
+  var imgCatMatch = text.match(/;cat=([^;?]+)/i);
+  if (!out.activityTag && imgCatMatch) out.activityTag = String(imgCatMatch[1] || '').trim();
+
+  var imgTypeMatch = text.match(/;type=([^;?]+)/i);
+  if (!out.groupTag && imgTypeMatch) out.groupTag = String(imgTypeMatch[1] || '').trim();
+
+  var ordMatch = text.match(/;ord=([^;?]+)/i);
+  if (!out.ordinalType && ordMatch) {
+    var ord = String(ordMatch[1] || '').trim().toLowerCase();
+    if (ord === '1') out.ordinalType = 'UNIQUE';
+    if (ord.indexOf('[sessionid]') !== -1 || ord.indexOf('{{session_id}}') !== -1) out.ordinalType = 'SESSION';
+  }
+
+  var sessionMatch = text.match(/'session_id'\s*:\s*'([^']+)'/i);
+  if (sessionMatch) out.sessionId = String(sessionMatch[1] || '').trim();
+
+  var customVarRegex = /'((?:u|U)\d+)'\s*:\s*'([^']*)'/g;
+  var match;
+  while ((match = customVarRegex.exec(text)) !== null) {
+    out.customVars[String(match[1]).toLowerCase()] = String(match[2] || '');
+  }
+
+  return out;
+}
+
+function mapDcmCountingTypeToOrdinal_(countingType) {
+  var t = String(countingType || '').toLowerCase();
+  if (t === 'standard') return 'STANDARD';
+  if (t === 'unique') return 'UNIQUE';
+  if (t === 'per_session') return 'SESSION';
+  if (t === 'transactions') return 'TRANSACTIONS';
+  if (t === 'items_sold') return 'ITEM_SOLD';
+  return '';
+}
+
+function stringifyCustomVars_(obj) {
+  if (!obj) return '';
+  var keys = Object.keys(obj);
+  if (!keys.length) return '';
+  return JSON.stringify(obj);
+}
+
+function findFirstEmptyFloodlightImportRow_(sheet) {
+  var startRow = 8;
+  var maxRows = sheet.getMaxRows();
+  var values = sheet.getRange(startRow, 2, maxRows - startRow + 1, 1).getDisplayValues();
+  for (var i = 0; i < values.length; i++) {
+    if (!String(values[i][0] || '').trim()) {
+      return startRow + i;
+    }
+  }
+  return Math.max(startRow, sheet.getLastRow() + 1);
 }
 
 function getFloodlightImportTableData_(sheet) {
@@ -2069,6 +2259,24 @@ function setTagParameterValueIfExists_(tag, key, value) {
       return;
     }
   }
+}
+
+function applyFloodlightCustomVariables_(tag, customVarsJson) {
+  var raw = String(customVarsJson || '').trim();
+  if (!raw) return;
+
+  var obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch (err) {
+    return;
+  }
+
+  Object.keys(obj).forEach(function(key) {
+    var norm = String(key || '').toLowerCase().trim();
+    if (!/^u\d+$/.test(norm)) return;
+    setTagParameterValue_(tag, norm, String(obj[key] || ''));
+  });
 }
 
 function writeExportSheet_(jsonOut, summary) {
