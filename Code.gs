@@ -173,8 +173,9 @@ function applyEditsAndCreateExportJson() {
 
   var previewSheet = getOrCreateSheet_(APP.SHEETS.EDIT_PREVIEW);
   var data = getSheetData_(previewSheet);
-  if (!data.rows.length) {
-    throw new Error('Edit Preview is empty. Run "Build Preview" first.');
+  var floodlightPending = countEnabledFloodlightRows_();
+  if (!data.rows.length && !floodlightPending) {
+    throw new Error('Nothing to apply. Build Preview selections and/or enable rows in Floodlight Import.');
   }
 
   var headers = data.headers;
@@ -213,11 +214,17 @@ function applyEditsAndCreateExportJson() {
     applicableOps.push(op);
   }
 
-  if (!applicableOps.length) {
-    throw new Error('No applicable preview operations selected. Nothing to apply.');
+  if (!applicableOps.length && !floodlightPending) {
+    throw new Error('No applicable preview operations selected and no enabled Floodlight rows found. Nothing to apply.');
   }
 
-  var applyResult = applyOperationsToContainer_(cv, applicableOps);
+  var applyResult = applicableOps.length
+    ? applyOperationsToContainer_(cv, applicableOps)
+    : {
+      originalTagCount: asArray_(cv.tag).length,
+      modifiedTagCount: asArray_(cv.tag).length,
+      operationsApplied: 0
+    };
   var floodlightResult = applyFloodlightImportsToContainer_(cv);
 
   var jsonOut = JSON.stringify(root, null, 2);
@@ -244,6 +251,22 @@ function applyEditsAndCreateExportJson() {
       'GTM import reminder:\n' +
       'Import into a NEW workspace, choose Merge, choose overwrite conflicting tags/triggers/variables, then review GTM detailed changes before confirming.'
   );
+}
+
+function countEnabledFloodlightRows_() {
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW);
+  if (sheet.getLastRow() < 8) return 0;
+
+  var data = getFloodlightImportTableData_(sheet);
+  if (!data.headers.length) return 0;
+  var h = indexHeaders_(data.headers);
+  if (h['Enabled'] === undefined) return 0;
+
+  var count = 0;
+  data.rows.forEach(function(row) {
+    if (toBoolean_(row[h['Enabled']])) count++;
+  });
+  return count;
 }
 
 function resetEditorWorkspace() {
