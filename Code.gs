@@ -787,7 +787,7 @@ function buildFloodlightImportTab_(cv) {
   var templateName = template ? asValue_(template.name) : '(no floodlight template tag found in container)';
 
   var infoRows = [
-    ['Instructions', 'Paste one floodlight per row. Required: Floodlight Name + Activity Tag.'],
+    ['Instructions', 'Columns B-H replicate the DCM TagSheet export headers for bulk paste workflows.'],
     ['Default Template Tag ID', templateId],
     ['Default Template Tag Name', templateName],
     ['DCM Import Tip', 'Use GTM Bulk Editor > Import DCM Floodlights From Selection after selecting rows from a DCM TagSheet paste.'],
@@ -799,7 +799,13 @@ function buildFloodlightImportTab_(cv) {
 
   var headers = [
     'Enabled',
-    'Floodlight Name',
+    'Activity ID',
+    'Activity Name',
+    'Group Name',
+    'Expected URL',
+    'Tag',
+    'Global Snippet',
+    'Event Snippet',
     'Activity Tag',
     'Group Tag',
     'Ordinal Type',
@@ -822,8 +828,12 @@ function buildFloodlightImportTab_(cv) {
 
   var starterRows = 200;
   var values = [];
+  var blankRow = [];
+  for (var b = 0; b < headers.length; b++) blankRow.push('');
   for (var i = 0; i < starterRows; i++) {
-    values.push([true, '', '', '', '', '', '', '', '', '']);
+    var row = blankRow.slice();
+    row[0] = true;
+    values.push(row);
   }
   sheet.getRange(8, 1, starterRows, headers.length).setValues(values);
   sheet.getRange(8, 1, starterRows, 1).insertCheckboxes();
@@ -1956,25 +1966,30 @@ function applyFloodlightImportsToContainer_(cv) {
   var skipped = 0;
 
   data.rows.forEach(function(row, idx) {
-    var rowNumber = idx + 2;
+    var rowNumber = idx + 8;
     var enabled = toBoolean_(row[h['Enabled']]);
     if (!enabled) return;
 
-    var name = String(row[h['Floodlight Name']] || '').trim();
-    var activityTag = String(row[h['Activity Tag']] || '').trim();
-    var groupTag = String(row[h['Group Tag']] || '').trim();
-    var ordinalType = String(row[h['Ordinal Type']] || '').trim();
-    var sessionId = String(row[h['Session ID']] || '').trim();
-    var valueVariable = String(row[h['Value Variable']] || '').trim();
-    var transactionIdVariable = String(row[h['Transaction ID Variable']] || '').trim();
-    var quantityVariable = String(row[h['Quantity Variable']] || '').trim();
-    var customVarsJson = String(row[h['Custom Variables JSON']] || '').trim();
+    var name = String(row[h['Activity Name']] || '').trim();
+    var groupName = String(row[h['Group Name']] || '').trim();
+    var eventSnippet = String(row[h['Event Snippet']] || '').trim();
+
+    var snippetParsed = parseDcmEventSnippet_(eventSnippet);
+
+    var activityTag = String(row[h['Activity Tag']] || '').trim() || snippetParsed.activityTag || '';
+    var groupTag = String(row[h['Group Tag']] || '').trim() || snippetParsed.groupTag || groupName || '';
+    var ordinalType = String(row[h['Ordinal Type']] || '').trim() || snippetParsed.ordinalType || '';
+    var sessionId = String(row[h['Session ID']] || '').trim() || snippetParsed.sessionId || '';
+    var valueVariable = String(row[h['Value Variable']] || '').trim() || snippetParsed.valueVariable || '';
+    var transactionIdVariable = String(row[h['Transaction ID Variable']] || '').trim() || snippetParsed.transactionIdVariable || '';
+    var quantityVariable = String(row[h['Quantity Variable']] || '').trim() || snippetParsed.quantityVariable || '';
+    var customVarsJson = String(row[h['Custom Variables JSON']] || '').trim() || stringifyCustomVars_(snippetParsed.customVars);
     var templateTagId = String(row[h['Template Tag ID']] || '').trim();
     var customUrl = String(row[h['Custom URL Override']] || '').trim();
     var folderId = String(row[h['Folder ID']] || '').trim();
 
     if (!name || !activityTag) {
-      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: Floodlight Name and Activity Tag are required.');
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: Activity Name and Activity Tag are required.');
       skipped++;
       return;
     }
@@ -2038,13 +2053,19 @@ function parseDcmSelectionToFloodlightRows_(values) {
     activityName: 2,
     groupName: 3,
     expectedUrl: 4,
+    tag: 5,
+    globalSnippet: 6,
     eventSnippet: 7
   };
 
   for (var r = hasHeader ? 1 : 0; r < values.length; r++) {
     var row = values[r] || [];
+    var activityId = String(row[idx.activityId] || '').trim();
     var name = String(row[idx.activityName] || '').trim();
     var group = String(row[idx.groupName] || '').trim();
+    var expectedUrl = String(row[idx.expectedUrl] || '').trim();
+    var tag = String(row[idx.tag] || '').trim();
+    var globalSnippet = String(row[idx.globalSnippet] || '').trim();
     var eventSnippet = String(row[idx.eventSnippet] || '').trim();
 
     if (!name && !eventSnippet) continue;
@@ -2061,7 +2082,13 @@ function parseDcmSelectionToFloodlightRows_(values) {
 
     rows.push([
       true,
+      activityId,
       name,
+      group,
+      expectedUrl,
+      tag,
+      globalSnippet,
+      eventSnippet,
       activityTag,
       groupTag,
       ordinalType,
@@ -2094,6 +2121,8 @@ function indexDcmHeaders_(headerRow) {
     activityName: 2,
     groupName: 3,
     expectedUrl: 4,
+    tag: 5,
+    globalSnippet: 6,
     eventSnippet: 7
   };
 
@@ -2103,6 +2132,8 @@ function indexDcmHeaders_(headerRow) {
     if (h === 'activity name') index.activityName = i;
     if (h === 'group name') index.groupName = i;
     if (h === 'expected url') index.expectedUrl = i;
+    if (h === 'tag') index.tag = i;
+    if (h === 'global snippet') index.globalSnippet = i;
     if (h === 'event snippet') index.eventSnippet = i;
   }
 
@@ -2183,7 +2214,13 @@ function stringifyCustomVars_(obj) {
 function findFirstEmptyFloodlightImportRow_(sheet) {
   var startRow = 8;
   var maxRows = sheet.getMaxRows();
-  var values = sheet.getRange(startRow, 2, maxRows - startRow + 1, 1).getDisplayValues();
+  var lastCol = Math.max(1, sheet.getLastColumn());
+  var headers = sheet.getRange(7, 1, 1, lastCol).getValues()[0].map(function(v) {
+    return String(v || '').trim();
+  });
+  var h = indexHeaders_(headers);
+  var nameCol = (h['Activity Name'] !== undefined) ? (h['Activity Name'] + 1) : 3;
+  var values = sheet.getRange(startRow, nameCol, maxRows - startRow + 1, 1).getDisplayValues();
   for (var i = 0; i < values.length; i++) {
     if (!String(values[i][0] || '').trim()) {
       return startRow + i;
