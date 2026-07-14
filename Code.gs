@@ -2053,6 +2053,7 @@ function applyFloodlightImportsToContainer_(cv) {
     if (ordinalType) setTagParameterValue_(newTag, 'ordinalType', ordinalType);
     if (sessionId) setTagParameterValue_(newTag, 'sessionId', sessionId);
     applyFloodlightTransactionFields_(newTag, {
+      ordinalType: ordinalType,
       valueVariable: valueVariable,
       transactionIdVariable: transactionIdVariable,
       quantityVariable: quantityVariable
@@ -2379,9 +2380,14 @@ function applyFloodlightCustomVariables_(tag, customVarsJson) {
 }
 
 function applyFloodlightTransactionFields_(tag, fields) {
+  var ordinalType = String(fields && fields.ordinalType || '').trim().toUpperCase();
   var valueVariable = String(fields && fields.valueVariable || '').trim();
   var transactionIdVariable = String(fields && fields.transactionIdVariable || '').trim();
   var quantityVariable = String(fields && fields.quantityVariable || '').trim();
+
+  var valueFallback = valueVariable || '[Revenue]';
+  var txFallback = transactionIdVariable || '[OrderID]';
+  var qtyFallback = quantityVariable || '[Quantity]';
 
   if (valueVariable) {
     setTagParameterValueByCandidates_(tag, ['value', 'cost', 'revenue'], valueVariable);
@@ -2398,11 +2404,24 @@ function applyFloodlightTransactionFields_(tag, fields) {
     setVendorTemplateParameterByCandidates_(tag, ['quantity', 'qty'], quantityVariable, false);
   }
 
+  // Always set canonical Floodlight keys for transaction-based counting types.
+  if (ordinalType === 'TRANSACTIONS' || ordinalType === 'ITEM_SOLD') {
+    setTagParameterValue_(tag, 'revenue', valueFallback);
+    setTagParameterValue_(tag, 'ord', txFallback);
+    setVendorTemplateParameterByCandidates_(tag, ['revenue'], valueFallback, false);
+    setVendorTemplateParameterByCandidates_(tag, ['ord'], txFallback, false);
+  }
+
+  if (ordinalType === 'ITEM_SOLD') {
+    setTagParameterValue_(tag, 'qty', qtyFallback);
+    setVendorTemplateParameterByCandidates_(tag, ['qty'], qtyFallback, false);
+  }
+
   // Some vendor-template floodlight tags require non-empty values for these keys.
   // Backfill defaults only when keys already exist and are empty.
-  setVendorTemplateParameterByCandidates_(tag, ['revenue', 'cost', 'value'], valueVariable || '[Revenue]', true);
-  setVendorTemplateParameterByCandidates_(tag, ['ord', 'transactionId', 'transaction_id'], transactionIdVariable || '[OrderID]', true);
-  setVendorTemplateParameterByCandidates_(tag, ['qty', 'quantity'], quantityVariable || '[Quantity]', true);
+  setVendorTemplateParameterByCandidates_(tag, ['revenue', 'cost', 'value'], valueFallback, true);
+  setVendorTemplateParameterByCandidates_(tag, ['ord', 'transactionId', 'transaction_id'], txFallback, true);
+  setVendorTemplateParameterByCandidates_(tag, ['qty', 'quantity'], qtyFallback, true);
 }
 
 function setTagParameterValueByCandidates_(tag, candidates, value) {
