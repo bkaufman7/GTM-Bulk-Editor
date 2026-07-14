@@ -42,7 +42,9 @@ function onOpen() {
   var approvalQueueMenu = ui.createMenu('Approval Queue')
     .addItem('Open Queue Loader', 'openApprovalQueueLoader')
     .addItem('Build Queue Tab', 'buildApprovalQueueTab')
-    .addItem('Apply Queue Decisions', 'applyApprovalQueueDecisions');
+    .addItem('Apply Queue Decisions', 'applyApprovalQueueDecisions')
+    .addSeparator()
+    .addItem('Check Live API Support', 'checkApprovalQueueApiSupport');
 
   ui.createMenu(APP.MENU)
     .addItem('Open JSON Loader', 'openJsonLoader')
@@ -817,6 +819,77 @@ function applyApprovalQueueDecisions() {
   );
 }
 
+function checkApprovalQueueApiSupport() {
+  var result = getApprovalQueueApiSupport_();
+  var message;
+
+  if (result.supported) {
+    message = 'Live approval queue support appears to be available.\n\n' +
+      'Discovery matches:\n' + result.matches.join('\n');
+  } else {
+    message = 'Live approval queue support is not exposed in the public GTM API discovery document.\n\n' +
+      'What is available instead:\n' +
+      '- workspace/tag/trigger/folder APIs\n' +
+      '- container versions, sync, bulk update, and revert APIs\n\n' +
+      'Result:\n' + result.detail;
+  }
+
+  SpreadsheetApp.getUi().alert(message);
+  return result;
+}
+
+function getApprovalQueueApiSupport_() {
+  var url = 'https://www.googleapis.com/discovery/v1/apis/tagmanager/v2/rest';
+  var response = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+
+  if (response.getResponseCode() !== 200) {
+    return {
+      supported: false,
+      detail: 'Could not load Tag Manager discovery document. HTTP ' + response.getResponseCode(),
+      matches: []
+    };
+  }
+
+  var doc = JSON.parse(response.getContentText());
+  var matches = [];
+
+  collectApprovalMatches_(doc.resources || {}, '', matches);
+
+  return {
+    supported: matches.length > 0,
+    detail: matches.length ? 'Approval-related methods/resources found in discovery.' : 'No approval-related methods or resources were found.',
+    matches: matches
+  };
+}
+
+function collectApprovalMatches_(node, path, matches) {
+  if (!node || typeof node !== 'object') return;
+
+  Object.keys(node).forEach(function(key) {
+    var value = node[key];
+    var nextPath = path ? path + '.' + key : key;
+
+    if (key.toLowerCase().indexOf('approv') !== -1) {
+      matches.push(nextPath);
+    }
+
+    if (value && typeof value === 'object') {
+      if (value.id && String(value.id).toLowerCase().indexOf('approv') !== -1) {
+        matches.push(String(value.id));
+      }
+      if (value.methods) collectApprovalMatches_(value.methods, nextPath + '.methods', matches);
+      if (value.resources) collectApprovalMatches_(value.resources, nextPath + '.resources', matches);
+      if (value.schemas) collectApprovalMatches_(value.schemas, nextPath + '.schemas', matches);
+    }
+  });
+}
+
 function buildEmptyApprovalQueueRows_() {
   return [
     [false, 'Approve', '5082235', 'test00 - bulk test5', 'Tag', 'Pending', 'Any approver', '', '11 minutes ago', '', ''],
@@ -831,20 +904,37 @@ function parseApprovalQueuePaste_(rawText) {
   var lines = text.split(/\r?\n/).map(function(line) { return line.trim(); }).filter(function(line) { return !!line; });
   if (lines.length < 2) return [];
 
-  var delimiter = lines[0].indexOf('\t') !== -1 ? '\t' : ',';
-  var headers = splitDelimitedLine_(lines[0], delimiter);
+  var headerLineIndex = findApprovalQueueHeaderLineIndex_(lines);
+  var hasHeader = headerLineIndex >= 0;
+  var headers = hasHeader ? splitApprovalQueueLine_(lines[headerLineIndex]) : [];
   var col = indexHeaders_(headers.map(function(h) { return String(h || '').trim(); }));
+  var dataStart = hasHeader ? headerLineIndex + 1 : 0;
 
   var rows = [];
-  for (var i = 1; i < lines.length; i++) {
-    var parts = splitDelimitedLine_(lines[i], delimiter);
-    var name = getDelimitedValue_(parts, col, 'Name');
-    var type = getDelimitedValue_(parts, col, 'Type');
-    var status = getDelimitedValue_(parts, col, 'Status');
-    var assignedTo = getDelimitedValue_(parts, col, 'Assigned To');
-    var requestedBy = getDelimitedValue_(parts, col, 'Requested By');
-    var requestDate = getDelimitedValue_(parts, col, 'Request Date');
-    var queueItemId = extractQueueItemIdFromText_(lines[i]);
+  for (var i = dataStart; i < lines.length; i++) {
+    var line = lines[i];
+    if (hasHeader && isApprovalQueueHeaderLine_(line)) continue;
+
+    var parts = splitApprovalQueueLine_(line);
+    var name = hasHeader ? getDelimitedValue_(parts, col, 'Name') : getApprovalQueueFieldFromParts_(parts, 0);
+    var type = hasHeader ? getDelimitedValue_(parts, col, 'Type') : getApprovalQueueFieldFromParts_(parts, 1);
+    var status = hasHeader ? getDelimitedValue_(parts, col, 'Status') : getApprovalQueueFieldFromParts_(parts, 2);
+    var assignedTo = hasHeader ? getDelimitedValue_(parts, col, 'Assigned To') : getApprovalQueueFieldFromParts_(parts, 3);
+    var requestedBy = hasHeader ? getDelimitedValue_(parts, col, 'Requested By') : getApprovalQueueFieldFromParts_(parts, 4);
+    var requestDate = hasHeader ? getDelimitedValue_(parts, col, 'Request Date') : getApprovalQueueFieldFromParts_(parts, 5);
+    var queueItemId = extractQueueItemIdFromText_(line);
+
+    if (!queueItemId && hasHeader) {
+      queueItemId = getDelimitedValue_(parts, col, 'Queue Item ID');
+    }
+
+    if (!queueItemId) {
+      queueItemId = getApprovalQueueIdFromFallback_(line);
+    }
+
+    if (!name && !type && !status && !assignedTo && !requestDate && !queueItemId) {
+      continue;
+    }
 
     rows.push([
       false,
@@ -864,6 +954,39 @@ function parseApprovalQueuePaste_(rawText) {
   return rows;
 }
 
+function findApprovalQueueHeaderLineIndex_(lines) {
+  var candidates = ['name', 'type', 'status', 'assigned to', 'requested by', 'request date'];
+  for (var i = 0; i < lines.length; i++) {
+    var normalized = String(lines[i] || '').toLowerCase();
+    var score = 0;
+    candidates.forEach(function(candidate) {
+      if (normalized.indexOf(candidate) !== -1) score++;
+    });
+    if (score >= 4) return i;
+  }
+  return -1;
+}
+
+function isApprovalQueueHeaderLine_(line) {
+  return findApprovalQueueHeaderLineIndex_([line]) === 0;
+}
+
+function splitApprovalQueueLine_(line) {
+  var text = String(line || '').replace(/\u00a0/g, ' ').trim();
+  if (!text) return [];
+  if (text.indexOf('\t') !== -1) {
+    return text.split('\t').map(function(part) { return String(part || '').trim(); });
+  }
+  return text.split(/\s{2,}/).map(function(part) {
+    return String(part || '').trim();
+  });
+}
+
+function getApprovalQueueFieldFromParts_(parts, index) {
+  if (!parts || index < 0 || index >= parts.length) return '';
+  return String(parts[index] || '').trim();
+}
+
 function splitDelimitedLine_(line, delimiter) {
   return String(line || '').split(delimiter).map(function(part) {
     return String(part || '').trim();
@@ -878,6 +1001,11 @@ function getDelimitedValue_(parts, headerIndex, headerName) {
 
 function extractQueueItemIdFromText_(text) {
   var match = String(text || '').match(/\/approvals\/(\d+)/);
+  return match ? match[1] : '';
+}
+
+function getApprovalQueueIdFromFallback_(text) {
+  var match = String(text || '').match(/\b(\d{5,})\b/);
   return match ? match[1] : '';
 }
 
