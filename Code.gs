@@ -741,6 +741,9 @@ function saveApprovalQueueFromSidebar(rawText) {
   }
 
   var rows = parseApprovalQueuePaste_(rawText);
+  if (!rows.length) {
+    throw new Error('No approval queue rows were parsed. Copy the queue table rows from GTM, or use a CSV/table export, then paste the text again.');
+  }
   buildApprovalQueueTab(rows);
 
   return {
@@ -768,9 +771,6 @@ function buildApprovalQueueTab(rows) {
   ];
 
   var dataRows = rows || [];
-  if (!dataRows.length) {
-    dataRows = buildEmptyApprovalQueueRows_();
-  }
 
   writeTableSheet_(sheet, headers, dataRows, APP.TAB_COLORS.PURPLE);
 
@@ -890,16 +890,12 @@ function collectApprovalMatches_(node, path, matches) {
   });
 }
 
-function buildEmptyApprovalQueueRows_() {
-  return [
-    [false, 'Approve', '5082235', 'test00 - bulk test5', 'Tag', 'Pending', 'Any approver', '', '11 minutes ago', '', ''],
-    [false, 'Approve', '5088496', 'test00 - bulk test7', 'Tag', 'Pending', 'Any approver', '', '11 minutes ago', '', '']
-  ];
-}
-
 function parseApprovalQueuePaste_(rawText) {
   var text = String(rawText || '').trim();
   if (!text) return [];
+
+  var markdownRows = parseApprovalQueueMarkdownRows_(text);
+  if (markdownRows.length) return markdownRows;
 
   var lines = text.split(/\r?\n/).map(function(line) { return line.trim(); }).filter(function(line) { return !!line; });
   if (lines.length < 2) return [];
@@ -952,6 +948,63 @@ function parseApprovalQueuePaste_(rawText) {
   }
 
   return rows;
+}
+
+function parseApprovalQueueMarkdownRows_(text) {
+  var rows = [];
+  var source = String(text || '');
+  var regex = /\[([^\]]+)\]\((https?:\/\/[^)]+\/approvals\/(\d+)[^)]*)\)(.*?)(?=\[[^\]]+\]\(https?:\/\/[^)]+\/approvals\/\d+[^)]*\)|$)/g;
+  var match;
+
+  while ((match = regex.exec(source)) !== null) {
+    var name = String(match[1] || '').trim();
+    var url = String(match[2] || '').trim();
+    var queueItemId = String(match[3] || '').trim();
+    var suffix = String(match[4] || '').replace(/\s+/g, ' ').trim();
+
+    var parsed = parseApprovalQueueSuffix_(suffix);
+    rows.push([
+      false,
+      'Approve',
+      queueItemId,
+      name,
+      parsed.type || 'Tag',
+      parsed.status || 'Pending',
+      parsed.assignedTo || 'Any approver',
+      parsed.requestedBy || '',
+      parsed.requestDate || '',
+      '',
+      ''
+    ]);
+  }
+
+  return rows;
+}
+
+function parseApprovalQueueSuffix_(suffix) {
+  var text = String(suffix || '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return { type: 'Tag', status: 'Pending', assignedTo: 'Any approver', requestedBy: '', requestDate: '' };
+  }
+
+  var type = /\bTag\b/i.test(text) ? 'Tag' : (/\bTrigger\b/i.test(text) ? 'Trigger' : 'Tag');
+  var status = /\bPending\b/i.test(text) ? 'Pending' : (/\bApproved\b/i.test(text) ? 'Approved' : (/\bRejected\b/i.test(text) ? 'Rejected' : ''));
+  var assignedTo = '';
+  if (/Any approver/i.test(text)) assignedTo = 'Any approver';
+
+  var requestedBy = '';
+  var requestDate = '';
+
+  var requestDateMatch = text.match(/(\d+\s+(?:minute|minutes|hour|hours|day|days)\s+ago)\b/i);
+  if (requestDateMatch) requestDate = requestDateMatch[1];
+
+  return {
+    type: type,
+    status: status || 'Pending',
+    assignedTo: assignedTo || 'Any approver',
+    requestedBy: requestedBy,
+    requestDate: requestDate
+  };
 }
 
 function findApprovalQueueHeaderLineIndex_(lines) {
