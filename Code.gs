@@ -2385,15 +2385,24 @@ function applyFloodlightTransactionFields_(tag, fields) {
 
   if (valueVariable) {
     setTagParameterValueByCandidates_(tag, ['value', 'cost', 'revenue'], valueVariable);
+    setVendorTemplateParameterByCandidates_(tag, ['value', 'cost', 'revenue'], valueVariable, false);
   }
 
   if (transactionIdVariable) {
     setTagParameterValueByCandidates_(tag, ['transactionId', 'transaction_id', 'ord'], transactionIdVariable);
+    setVendorTemplateParameterByCandidates_(tag, ['transactionId', 'transaction_id', 'ord'], transactionIdVariable, false);
   }
 
   if (quantityVariable) {
     setTagParameterValueByCandidates_(tag, ['quantity', 'qty'], quantityVariable);
+    setVendorTemplateParameterByCandidates_(tag, ['quantity', 'qty'], quantityVariable, false);
   }
+
+  // Some vendor-template floodlight tags require non-empty values for these keys.
+  // Backfill defaults only when keys already exist and are empty.
+  setVendorTemplateParameterByCandidates_(tag, ['revenue', 'cost', 'value'], valueVariable || '[Revenue]', true);
+  setVendorTemplateParameterByCandidates_(tag, ['ord', 'transactionId', 'transaction_id'], transactionIdVariable || '[OrderID]', true);
+  setVendorTemplateParameterByCandidates_(tag, ['qty', 'quantity'], quantityVariable || '[Quantity]', true);
 }
 
 function setTagParameterValueByCandidates_(tag, candidates, value) {
@@ -2410,12 +2419,60 @@ function setTagParameterValueByCandidates_(tag, candidates, value) {
     var key = String(params[i] && params[i].key || '');
     if (keys.indexOf(key) !== -1) {
       params[i].value = String(value || '');
-      if (!params[i].type) params[i].type = 'template';
+      if (!params[i].type) params[i].type = 'TEMPLATE';
       return;
     }
   }
 
   setTagParameterValue_(tag, keys[0], value);
+}
+
+function setVendorTemplateParameterByCandidates_(tag, candidates, value, onlyIfExists) {
+  var keys = asArray_(candidates).map(function(k) { return String(k || '').trim(); }).filter(function(k) { return !!k; });
+  if (!keys.length) return;
+
+  var vendorTemplate = tag && tag.vendorTemplate;
+  if (!vendorTemplate || !vendorTemplate.parameter) return;
+
+  var param = vendorTemplate.parameter;
+  var val = String(value || '').trim();
+  if (!val) return;
+
+  // Most GTM exports represent vendorTemplate.parameter as an object map.
+  if (!Array.isArray(param) && typeof param === 'object') {
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (Object.prototype.hasOwnProperty.call(param, k)) {
+        if (!onlyIfExists || !String(param[k] || '').trim()) {
+          param[k] = val;
+        }
+        return;
+      }
+    }
+
+    if (!onlyIfExists) {
+      param[keys[0]] = val;
+    }
+    return;
+  }
+
+  // Fallback: if parameter is an array of key/value entries.
+  if (Array.isArray(param)) {
+    for (var j = 0; j < param.length; j++) {
+      var entry = param[j] || {};
+      var entryKey = String(entry.key || '').trim();
+      if (keys.indexOf(entryKey) !== -1) {
+        if (!onlyIfExists || !String(entry.value || '').trim()) {
+          entry.value = val;
+        }
+        return;
+      }
+    }
+
+    if (!onlyIfExists) {
+      param.push({ key: keys[0], value: val });
+    }
+  }
 }
 
 function writeExportSheet_(jsonOut, summary) {
