@@ -2443,15 +2443,14 @@ function setVendorTemplateParameterByCandidates_(tag, candidates, value, onlyIfE
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
       if (Object.prototype.hasOwnProperty.call(param, k)) {
-        if (!onlyIfExists || !String(param[k] || '').trim()) {
-          param[k] = val;
+        if (setVendorTemplateParamValue_(param, k, val, onlyIfExists)) {
+          return;
         }
-        return;
       }
     }
 
     if (!onlyIfExists) {
-      param[keys[0]] = val;
+      setVendorTemplateParamValue_(param, keys[0], val, false);
     }
     return;
   }
@@ -2462,9 +2461,8 @@ function setVendorTemplateParameterByCandidates_(tag, candidates, value, onlyIfE
       var entry = param[j] || {};
       var entryKey = String(entry.key || '').trim();
       if (keys.indexOf(entryKey) !== -1) {
-        if (!onlyIfExists || !String(entry.value || '').trim()) {
-          entry.value = val;
-        }
+        var current = String(entry.value || '').trim();
+        if (!onlyIfExists || !current) entry.value = val;
         return;
       }
     }
@@ -2473,6 +2471,52 @@ function setVendorTemplateParameterByCandidates_(tag, candidates, value, onlyIfE
       param.push({ key: keys[0], value: val });
     }
   }
+}
+
+function setVendorTemplateParamValue_(paramObj, key, value, onlyIfExists) {
+  if (!paramObj || typeof paramObj !== 'object') return false;
+  var slot = paramObj[key];
+
+  // Primitive value slot
+  if (slot === null || slot === undefined || typeof slot !== 'object' || Array.isArray(slot)) {
+    var currentPrimitive = String(slot || '').trim();
+    if (!onlyIfExists || !currentPrimitive) {
+      paramObj[key] = value;
+    }
+    return true;
+  }
+
+  // Common nested shape: { value: "..." }
+  if (Object.prototype.hasOwnProperty.call(slot, 'value')) {
+    var currentValue = String(slot.value || '').trim();
+    if (!onlyIfExists || !currentValue) {
+      slot.value = value;
+    }
+    return true;
+  }
+
+  // Fallback nested shapes (rare): set direct payload fields when present.
+  if (Object.prototype.hasOwnProperty.call(slot, 'stringValue')) {
+    var currentString = String(slot.stringValue || '').trim();
+    if (!onlyIfExists || !currentString) {
+      slot.stringValue = value;
+    }
+    return true;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(slot, 'templateValue')) {
+    var currentTemplate = String(slot.templateValue || '').trim();
+    if (!onlyIfExists || !currentTemplate) {
+      slot.templateValue = value;
+    }
+    return true;
+  }
+
+  // Unknown nested object: overwrite only when allowed.
+  if (!onlyIfExists) {
+    paramObj[key] = value;
+  }
+  return true;
 }
 
 function writeExportSheet_(jsonOut, summary) {
