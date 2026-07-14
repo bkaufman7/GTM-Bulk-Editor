@@ -838,6 +838,16 @@ function buildFloodlightImportTab_(cv) {
   sheet.getRange(8, 1, starterRows, headers.length).setValues(values);
   sheet.getRange(8, 1, starterRows, 1).insertCheckboxes();
 
+  var activityTagFormulas = [];
+  var groupTagFormulas = [];
+  for (var r = 0; r < starterRows; r++) {
+    var rowNum = r + 8;
+    activityTagFormulas.push(['=IFERROR(REGEXEXTRACT(H' + rowNum + ',"cat=([^;?]+)"),"")']);
+    groupTagFormulas.push(['=IFERROR(REGEXEXTRACT(H' + rowNum + ',"type=([^;?]+)"),"")']);
+  }
+  sheet.getRange(8, 9, starterRows, 1).setFormulas(activityTagFormulas);
+  sheet.getRange(8, 10, starterRows, 1).setFormulas(groupTagFormulas);
+
   sheet.setFrozenRows(7);
   if (sheet.getFilter()) sheet.getFilter().remove();
   sheet.getRange(7, 1, starterRows + 1, headers.length).createFilter();
