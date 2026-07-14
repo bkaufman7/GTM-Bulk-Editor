@@ -804,6 +804,9 @@ function buildFloodlightImportTab_(cv) {
     'Group Tag',
     'Ordinal Type',
     'Session ID',
+    'Value Variable',
+    'Transaction ID Variable',
+    'Quantity Variable',
     'Custom Variables JSON',
     'Trigger IDs',
     'Blocking Trigger IDs',
@@ -1962,6 +1965,9 @@ function applyFloodlightImportsToContainer_(cv) {
     var groupTag = String(row[h['Group Tag']] || '').trim();
     var ordinalType = String(row[h['Ordinal Type']] || '').trim();
     var sessionId = String(row[h['Session ID']] || '').trim();
+    var valueVariable = String(row[h['Value Variable']] || '').trim();
+    var transactionIdVariable = String(row[h['Transaction ID Variable']] || '').trim();
+    var quantityVariable = String(row[h['Quantity Variable']] || '').trim();
     var customVarsJson = String(row[h['Custom Variables JSON']] || '').trim();
     var templateTagId = String(row[h['Template Tag ID']] || '').trim();
     var customUrl = String(row[h['Custom URL Override']] || '').trim();
@@ -1998,6 +2004,11 @@ function applyFloodlightImportsToContainer_(cv) {
     if (groupTag) setTagParameterValue_(newTag, 'groupTag', groupTag);
     if (ordinalType) setTagParameterValue_(newTag, 'ordinalType', ordinalType);
     if (sessionId) setTagParameterValue_(newTag, 'sessionId', sessionId);
+    applyFloodlightTransactionFields_(newTag, {
+      valueVariable: valueVariable,
+      transactionIdVariable: transactionIdVariable,
+      quantityVariable: quantityVariable
+    });
 
     applyFloodlightCustomVariables_(newTag, customVarsJson);
     if (customUrl) {
@@ -2043,6 +2054,9 @@ function parseDcmSelectionToFloodlightRows_(values) {
     var groupTag = parsed.groupTag || group || '';
     var ordinalType = parsed.ordinalType || '';
     var sessionId = parsed.sessionId || '';
+    var valueVariable = parsed.valueVariable || '';
+    var transactionIdVariable = parsed.transactionIdVariable || '';
+    var quantityVariable = parsed.quantityVariable || '';
     var customVarsJson = stringifyCustomVars_(parsed.customVars);
 
     rows.push([
@@ -2052,6 +2066,9 @@ function parseDcmSelectionToFloodlightRows_(values) {
       groupTag,
       ordinalType,
       sessionId,
+      valueVariable,
+      transactionIdVariable,
+      quantityVariable,
       customVarsJson,
       '',
       '',
@@ -2099,6 +2116,9 @@ function parseDcmEventSnippet_(snippet) {
     activityTag: '',
     ordinalType: '',
     sessionId: '',
+    valueVariable: '',
+    transactionIdVariable: '',
+    quantityVariable: '',
     customVars: {}
   };
 
@@ -2130,6 +2150,15 @@ function parseDcmEventSnippet_(snippet) {
   while ((match = customVarRegex.exec(text)) !== null) {
     out.customVars[String(match[1]).toLowerCase()] = String(match[2] || '');
   }
+
+  var valueMatch = text.match(/'value'\s*:\s*'([^']+)'/i);
+  if (valueMatch) out.valueVariable = String(valueMatch[1] || '').trim();
+
+  var transactionIdMatch = text.match(/'transaction_id'\s*:\s*'([^']+)'/i);
+  if (transactionIdMatch) out.transactionIdVariable = String(transactionIdMatch[1] || '').trim();
+
+  var quantityMatch = text.match(/'quantity'\s*:\s*'([^']+)'/i);
+  if (quantityMatch) out.quantityVariable = String(quantityMatch[1] || '').trim();
 
   return out;
 }
@@ -2277,6 +2306,46 @@ function applyFloodlightCustomVariables_(tag, customVarsJson) {
     if (!/^u\d+$/.test(norm)) return;
     setTagParameterValue_(tag, norm, String(obj[key] || ''));
   });
+}
+
+function applyFloodlightTransactionFields_(tag, fields) {
+  var valueVariable = String(fields && fields.valueVariable || '').trim();
+  var transactionIdVariable = String(fields && fields.transactionIdVariable || '').trim();
+  var quantityVariable = String(fields && fields.quantityVariable || '').trim();
+
+  if (valueVariable) {
+    setTagParameterValueByCandidates_(tag, ['value', 'cost', 'revenue'], valueVariable);
+  }
+
+  if (transactionIdVariable) {
+    setTagParameterValueByCandidates_(tag, ['transactionId', 'transaction_id', 'ord'], transactionIdVariable);
+  }
+
+  if (quantityVariable) {
+    setTagParameterValueByCandidates_(tag, ['quantity', 'qty'], quantityVariable);
+  }
+}
+
+function setTagParameterValueByCandidates_(tag, candidates, value) {
+  var keys = asArray_(candidates).map(function(k) { return String(k || '').trim(); }).filter(function(k) { return !!k; });
+  if (!keys.length) return;
+
+  var params = tag && tag.parameter;
+  if (!params || !Array.isArray(params)) {
+    params = [];
+    tag.parameter = params;
+  }
+
+  for (var i = 0; i < params.length; i++) {
+    var key = String(params[i] && params[i].key || '');
+    if (keys.indexOf(key) !== -1) {
+      params[i].value = String(value || '');
+      if (!params[i].type) params[i].type = 'template';
+      return;
+    }
+  }
+
+  setTagParameterValue_(tag, keys[0], value);
 }
 
 function writeExportSheet_(jsonOut, summary) {
