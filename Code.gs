@@ -2216,6 +2216,14 @@ function parseDcmEventSnippet_(snippet) {
     out.customVars[String(match[1]).toLowerCase()] = String(match[2] || '');
   }
 
+  // Also support image-tag URL format: ;u1=value;u2=value...
+  var customVarUrlRegex = /;((?:u|U)\d+)=([^;?]*)/g;
+  while ((match = customVarUrlRegex.exec(text)) !== null) {
+    var key = String(match[1] || '').toLowerCase();
+    var val = decodeURIComponentSafe_(String(match[2] || ''));
+    out.customVars[key] = val;
+  }
+
   var valueMatch = text.match(/'value'\s*:\s*'([^']+)'/i);
   if (valueMatch) out.valueVariable = String(valueMatch[1] || '').trim();
 
@@ -2372,11 +2380,64 @@ function applyFloodlightCustomVariables_(tag, customVarsJson) {
     return;
   }
 
+  var normalized = {};
   Object.keys(obj).forEach(function(key) {
     var norm = String(key || '').toLowerCase().trim();
     if (!/^u\d+$/.test(norm)) return;
+    normalized[norm] = String(obj[key] || '');
     setTagParameterValue_(tag, norm, String(obj[key] || ''));
   });
+
+  setFloodlightCustomVariableList_(tag, normalized);
+}
+
+function setFloodlightCustomVariableList_(tag, customVars) {
+  var keys = Object.keys(customVars || {}).filter(function(k) { return /^u\d+$/.test(String(k || '').toLowerCase()); });
+  if (!keys.length) return;
+
+  keys.sort(function(a, b) {
+    return Number(String(a).slice(1)) - Number(String(b).slice(1));
+  });
+
+  var list = keys.map(function(k) {
+    return {
+      type: 'MAP',
+      map: [
+        { type: 'TEMPLATE', key: 'key', value: k },
+        { type: 'TEMPLATE', key: 'value', value: String(customVars[k] || '') }
+      ]
+    };
+  });
+
+  var params = tag && tag.parameter;
+  if (!params || !Array.isArray(params)) {
+    params = [];
+    tag.parameter = params;
+  }
+
+  for (var i = 0; i < params.length; i++) {
+    if (String(params[i] && params[i].key || '') === 'customVariable') {
+      params[i].type = 'LIST';
+      params[i].list = list;
+      return;
+    }
+  }
+
+  params.push({
+    type: 'LIST',
+    key: 'customVariable',
+    list: list
+  });
+}
+
+function decodeURIComponentSafe_(value) {
+  var raw = String(value || '');
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch (err) {
+    return raw;
+  }
 }
 
 function applyFloodlightTransactionFields_(tag, fields) {
