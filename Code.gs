@@ -2336,13 +2336,13 @@ function setTagParameterValue_(tag, key, value) {
     var p = tag.parameter[i];
     if (String(p && p.key || '') === key) {
       p.value = String(value || '');
-      if (!p.type) p.type = 'template';
+      if (!p.type) p.type = 'TEMPLATE';
       return;
     }
   }
 
   tag.parameter.push({
-    type: 'template',
+    type: 'TEMPLATE',
     key: key,
     value: String(value || '')
   });
