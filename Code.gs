@@ -55,6 +55,7 @@ function onOpen() {
     .addItem('Build Editor Tabs', 'buildEditorTabs')
     .addItem('Open Floodlight Import Tab', 'openFloodlightImportTab')
     .addItem('Import DCM Floodlights From Selection', 'importDcmFloodlightsFromSelection')
+    .addItem('Fill Template Tag ID Down Selection', 'fillTemplateTagIdDownSelection')
     .addItem('Review Floodlight Rows', 'reviewFloodlightRows')
     .addItem('Open Floodlight Examples Tab', 'openFloodlightExamplesTab')
     .addItem('Build Preview', 'buildPreview')
@@ -792,6 +793,7 @@ function reviewFloodlightRows() {
 
   var review = analyzeFloodlightRows_(cv);
   writeFloodlightErrorsTab_(review.errors);
+  SpreadsheetApp.getActive().setActiveSheet(getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_ERRORS, APP.TAB_COLORS.PURPLE));
 
   SpreadsheetApp.getUi().alert(
     'Floodlight review complete.\n\n' +
@@ -799,6 +801,58 @@ function reviewFloodlightRows() {
       'Rows with issues: ' + review.errors.length + '\n\n' +
       'See "' + APP.SHEETS.FLOODLIGHT_ERRORS + '" and Result column on Floodlight Import.'
   );
+}
+
+function fillTemplateTagIdDownSelection() {
+  ensureCoreSheets_();
+
+  var sheet = SpreadsheetApp.getActiveSheet();
+  if (!sheet || sheet.getName() !== APP.SHEETS.FLOODLIGHT_IMPORT) {
+    throw new Error('Open the Floodlight Import tab and select rows first.');
+  }
+
+  var range = sheet.getActiveRange();
+  if (!range) {
+    throw new Error('No rows selected. Select one or more rows in Floodlight Import and try again.');
+  }
+
+  var headers = sheet.getRange(7, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(v) {
+    return String(v || '').trim();
+  });
+  var h = indexHeaders_(headers);
+  if (h['Template Tag ID'] === undefined) {
+    throw new Error('Template Tag ID column was not found. Rebuild Floodlight Import tab and try again.');
+  }
+
+  var templateCol = h['Template Tag ID'] + 1;
+  var startRow = range.getRow();
+  var rowCount = range.getNumRows();
+  if (startRow < 8) {
+    throw new Error('Select data rows from row 8 or below.');
+  }
+
+  var sourceValue = String(sheet.getRange(startRow, templateCol).getDisplayValue() || '').trim();
+  if (!sourceValue) {
+    var response = SpreadsheetApp.getUi().prompt(
+      'Fill Template Tag ID',
+      'Enter Template Tag ID to apply to selected rows:',
+      SpreadsheetApp.getUi().ButtonSet.OK_CANCEL
+    );
+    if (response.getSelectedButton() !== SpreadsheetApp.getUi().Button.OK) return;
+    sourceValue = String(response.getResponseText() || '').trim();
+  }
+
+  if (!sourceValue) {
+    throw new Error('Template Tag ID is empty. Nothing was filled.');
+  }
+
+  var values = [];
+  for (var i = 0; i < rowCount; i++) {
+    values.push([sourceValue]);
+  }
+  sheet.getRange(startRow, templateCol, rowCount, 1).setValues(values);
+
+  SpreadsheetApp.getUi().alert('Filled Template Tag ID "' + sourceValue + '" for ' + rowCount + ' selected rows.');
 }
 
 function openFloodlightExamplesTab() {
