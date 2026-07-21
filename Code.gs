@@ -3105,8 +3105,13 @@ function getContainerVersion_(root) {
 
 function validateContainerCore_(cv) {
   if (!cv) throw new Error('Container JSON is missing containerVersion.');
-  if (!cv.tag) throw new Error('containerVersion.tag is missing.');
-  if (!cv.trigger) throw new Error('containerVersion.trigger is missing.');
+
+  // Empty/new containers may omit arrays entirely.
+  // Normalize to empty arrays so tabs/build steps can still run.
+  if (!Array.isArray(cv.tag)) cv.tag = asArray_(cv.tag);
+  if (!Array.isArray(cv.trigger)) cv.trigger = asArray_(cv.trigger);
+  if (!Array.isArray(cv.variable)) cv.variable = asArray_(cv.variable);
+  if (!Array.isArray(cv.folder)) cv.folder = asArray_(cv.folder);
 }
 
 function buildTagMap_(cv) {
