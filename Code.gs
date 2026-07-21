@@ -16,6 +16,7 @@ var APP = {
     RAW_JSON: 'RAW_JSON',
     APPROVAL_QUEUE: 'Approval Queue',
     FLOODLIGHT_IMPORT: 'Floodlight Import',
+    FLOODLIGHT_EXAMPLES: 'Floodlight Examples Needed',
     CONTAINER_INFO: 'Container Info',
     TRIGGER_DIR: 'Trigger Directory',
     TAG_DIR: 'Tag Directory',
@@ -53,6 +54,7 @@ function onOpen() {
     .addItem('Build Editor Tabs', 'buildEditorTabs')
     .addItem('Open Floodlight Import Tab', 'openFloodlightImportTab')
     .addItem('Import DCM Floodlights From Selection', 'importDcmFloodlightsFromSelection')
+    .addItem('Open Floodlight Examples Tab', 'openFloodlightExamplesTab')
     .addItem('Build Preview', 'buildPreview')
     .addItem('Apply Edits & Create Export JSON', 'applyEditsAndCreateExportJson')
     .addSubMenu(approvalQueueMenu)
@@ -113,6 +115,7 @@ function buildEditorTabs() {
   buildAssignmentsAddSheet_(cv);
   buildBulkRulesSheet_();
   buildFloodlightImportTab_(cv);
+  buildFloodlightExamplesTab_();
   buildApprovalQueueTab();
   resetPreviewSheet_();
   resetExportSheet_();
@@ -290,6 +293,7 @@ function resetEditorWorkspace() {
     APP.SHEETS.ASSIGN_ADD,
     APP.SHEETS.BULK_RULES,
     APP.SHEETS.FLOODLIGHT_IMPORT,
+    APP.SHEETS.FLOODLIGHT_EXAMPLES,
     APP.SHEETS.EDIT_PREVIEW,
     APP.SHEETS.EXPORT_JSON
   ];
@@ -328,12 +332,13 @@ function rebuildReadMe() {
     ['3) Run "Build Editor Tabs."'],
     ['4) Use row-based edits and/or rule-based edits.'],
     ['5) Optional: Open Floodlight Import tab and paste DCM floodlight rows to create new GTM Floodlight tags.'],
-    ['6) Run "Build Preview."'],
-    ['7) Review warnings and errors in Edit Preview.'],
-    ['8) Run "Apply Edits & Create Export JSON."'],
-    ['9) Import modified JSON into a NEW GTM workspace.'],
-    ['10) Choose Merge and overwrite conflicting tags/triggers/variables.'],
-    ['11) Review GTM detailed changes before confirming.'],
+    ['6) Optional: Open Floodlight Examples Tab and mark example coverage needed for net-new Floodlight patterns.'],
+    ['7) Run "Build Preview."'],
+    ['8) Review warnings and errors in Edit Preview.'],
+    ['9) Run "Apply Edits & Create Export JSON."'],
+    ['10) Import modified JSON into a NEW GTM workspace.'],
+    ['11) Choose Merge and overwrite conflicting tags/triggers/variables.'],
+    ['12) Review GTM detailed changes before confirming.'],
     [''],
     ['Important Notes'],
     ['- Original pasted JSON remains source of truth.'],
@@ -771,6 +776,60 @@ function openFloodlightImportTab() {
 
   buildFloodlightImportTab_(cv);
   SpreadsheetApp.getActive().setActiveSheet(getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW));
+}
+
+function openFloodlightExamplesTab() {
+  ensureCoreSheets_();
+  buildFloodlightExamplesTab_();
+  SpreadsheetApp.getActive().setActiveSheet(getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_EXAMPLES, APP.TAB_COLORS.BLUE));
+}
+
+function buildFloodlightExamplesTab_() {
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_EXAMPLES, APP.TAB_COLORS.BLUE);
+  sheet.clear();
+
+  var infoRows = [
+    ['Purpose', 'Use this tab once to provide sample rows/tags for each Floodlight pattern you want fully automated.'],
+    ['How to use', 'Paste example DCM row text and GTM template tag names/IDs, then mark Provided? = TRUE.'],
+    ['Output', 'Once coverage is complete, DCM paste to Floodlight Import can stay mostly hands-off.']
+  ];
+  sheet.getRange(1, 1, infoRows.length, 2).setValues(infoRows);
+  sheet.getRange(1, 1, infoRows.length, 1).setFontWeight('bold');
+
+  var headers = [
+    'Provided?',
+    'Pattern Name',
+    'DCM Counting Type',
+    'Needs Revenue?',
+    'Needs Order ID?',
+    'Needs Quantity?',
+    'Needs Session ID?',
+    'Custom U Vars Count',
+    'Example DCM Activity Name',
+    'Example Event Snippet (short)',
+    'Example GTM Template Tag ID',
+    'Example GTM Template Tag Name',
+    'Notes'
+  ];
+  sheet.getRange(5, 1, 1, headers.length).setValues([headers]);
+  formatHeaderRow_(sheet, 5, headers.length);
+
+  var rows = [
+    [false, 'Standard conversion', 'standard', false, false, false, false, 0, '', '', '', '', 'Baseline pageview/standard conversion'],
+    [false, 'Unique conversion', 'unique', false, false, false, false, 0, '', '', '', '', 'Requires ordinalType UNIQUE'],
+    [false, 'Per-session conversion', 'per_session', false, false, false, true, 0, '', '', '', '', 'Requires session_id mapping'],
+    [false, 'Transactions', 'transactions', true, true, false, false, 0, '', '', '', '', 'Requires revenue + orderId'],
+    [false, 'Items sold', 'items_sold', true, true, true, false, 0, '', '', '', '', 'Requires revenue + orderId + qty'],
+    [false, 'Custom vars heavy', 'mixed', false, false, false, false, 16, '', '', '', '', 'Use a row like bktestt - bulk with u1..u16']
+  ];
+
+  sheet.getRange(6, 1, rows.length, headers.length).setValues(rows);
+  sheet.getRange(6, 1, rows.length, 1).insertCheckboxes();
+
+  sheet.setFrozenRows(5);
+  if (sheet.getFilter()) sheet.getFilter().remove();
+  sheet.getRange(5, 1, rows.length + 1, headers.length).createFilter();
+  sheet.autoResizeColumns(1, headers.length);
 }
 
 function importDcmFloodlightsFromSelection() {
