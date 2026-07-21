@@ -17,6 +17,7 @@ var APP = {
     APPROVAL_QUEUE: 'Approval Queue',
     FLOODLIGHT_IMPORT: 'Floodlight Import',
     FLOODLIGHT_EXAMPLES: 'Floodlight Examples Needed',
+    FLOODLIGHT_ERRORS: 'Floodlight Import Errors',
     CONTAINER_INFO: 'Container Info',
     TRIGGER_DIR: 'Trigger Directory',
     TAG_DIR: 'Tag Directory',
@@ -54,6 +55,7 @@ function onOpen() {
     .addItem('Build Editor Tabs', 'buildEditorTabs')
     .addItem('Open Floodlight Import Tab', 'openFloodlightImportTab')
     .addItem('Import DCM Floodlights From Selection', 'importDcmFloodlightsFromSelection')
+    .addItem('Review Floodlight Rows', 'reviewFloodlightRows')
     .addItem('Open Floodlight Examples Tab', 'openFloodlightExamplesTab')
     .addItem('Build Preview', 'buildPreview')
     .addItem('Apply Edits & Create Export JSON', 'applyEditsAndCreateExportJson')
@@ -115,6 +117,7 @@ function buildEditorTabs() {
   buildAssignmentsAddSheet_(cv);
   buildBulkRulesSheet_();
   buildFloodlightImportTab_(cv);
+  writeFloodlightErrorsTab_([]);
   buildFloodlightExamplesTab_();
   buildApprovalQueueTab();
   resetPreviewSheet_();
@@ -294,6 +297,7 @@ function resetEditorWorkspace() {
     APP.SHEETS.BULK_RULES,
     APP.SHEETS.FLOODLIGHT_IMPORT,
     APP.SHEETS.FLOODLIGHT_EXAMPLES,
+    APP.SHEETS.FLOODLIGHT_ERRORS,
     APP.SHEETS.EDIT_PREVIEW,
     APP.SHEETS.EXPORT_JSON
   ];
@@ -333,9 +337,10 @@ function rebuildReadMe() {
     ['4) Use row-based edits and/or rule-based edits.'],
     ['5) Optional: Open Floodlight Import tab and paste DCM floodlight rows to create new GTM Floodlight tags.'],
     ['6) Optional: Open Floodlight Examples Tab and mark example coverage needed for net-new Floodlight patterns.'],
-    ['7) Run "Build Preview."'],
-    ['8) Review warnings and errors in Edit Preview.'],
-    ['9) Run "Apply Edits & Create Export JSON."'],
+    ['7) Optional: Run "Review Floodlight Rows" to populate Floodlight Import Errors before export.'],
+    ['8) Run "Build Preview."'],
+    ['9) Review warnings and errors in Edit Preview.'],
+    ['10) Run "Apply Edits & Create Export JSON."'],
     ['10) Import modified JSON into a NEW GTM workspace.'],
     ['11) Choose Merge and overwrite conflicting tags/triggers/variables.'],
     ['12) Review GTM detailed changes before confirming.'],
@@ -776,6 +781,24 @@ function openFloodlightImportTab() {
 
   buildFloodlightImportTab_(cv);
   SpreadsheetApp.getActive().setActiveSheet(getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW));
+}
+
+function reviewFloodlightRows() {
+  ensureCoreSheets_();
+
+  var parsed = getParsedRootFromRawSheet_();
+  var cv = parsed.containerVersion;
+  validateContainerCore_(cv);
+
+  var review = analyzeFloodlightRows_(cv);
+  writeFloodlightErrorsTab_(review.errors);
+
+  SpreadsheetApp.getUi().alert(
+    'Floodlight review complete.\n\n' +
+      'Ready rows: ' + review.ready + '\n' +
+      'Rows with issues: ' + review.errors.length + '\n\n' +
+      'See "' + APP.SHEETS.FLOODLIGHT_ERRORS + '" and Result column on Floodlight Import.'
+  );
 }
 
 function openFloodlightExamplesTab() {
@@ -2056,6 +2079,7 @@ function applyFloodlightImportsToContainer_(cv) {
   var maxTagId = getMaxNumericTagId_(tags);
   var added = 0;
   var skipped = 0;
+  var errors = [];
 
   data.rows.forEach(function(row, idx) {
     var rowNumber = idx + 8;
@@ -2086,9 +2110,19 @@ function applyFloodlightImportsToContainer_(cv) {
       return;
     }
 
-    var templateTag = findFloodlightTemplateTag_(cv, templateTagId);
+    if (!templateTagId) {
+      var msgMissingTemplate = 'Skipped: Template Tag ID is required for this row.';
+      setFloodlightImportResult_(sheet, rowNumber, h, msgMissingTemplate);
+      errors.push(buildFloodlightErrorRow_(rowNumber, name, activityTag, templateTagId, msgMissingTemplate, eventSnippet));
+      skipped++;
+      return;
+    }
+
+    var templateTag = findFloodlightTemplateTagById_(cv, templateTagId);
     if (!templateTag) {
-      setFloodlightImportResult_(sheet, rowNumber, h, 'Skipped: No Floodlight template tag found. Provide Template Tag ID or include one in container JSON.');
+      var msgBadTemplate = 'Skipped: Template Tag ID not found or not a Floodlight tag (flc).';
+      setFloodlightImportResult_(sheet, rowNumber, h, msgBadTemplate);
+      errors.push(buildFloodlightErrorRow_(rowNumber, name, activityTag, templateTagId, msgBadTemplate, eventSnippet));
       skipped++;
       return;
     }
@@ -2128,10 +2162,103 @@ function applyFloodlightImportsToContainer_(cv) {
     added++;
   });
 
+  writeFloodlightErrorsTab_(errors);
+
   return {
     added: added,
     skipped: skipped
   };
+}
+
+function analyzeFloodlightRows_(cv) {
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_IMPORT, APP.TAB_COLORS.YELLOW);
+  var data = getFloodlightImportTableData_(sheet);
+  if (!data.headers.length) return { ready: 0, errors: [] };
+
+  var h = indexHeaders_(data.headers);
+  var ready = 0;
+  var errors = [];
+
+  data.rows.forEach(function(row, idx) {
+    var rowNumber = idx + 8;
+    var enabled = toBoolean_(row[h['Enabled']]);
+    if (!enabled) return;
+
+    var name = String(row[h['Activity Name']] || '').trim();
+    var groupName = String(row[h['Group Name']] || '').trim();
+    var eventSnippet = String(row[h['Event Snippet']] || '').trim();
+    var parsed = parseDcmEventSnippet_(eventSnippet);
+
+    var activityTag = String(row[h['Activity Tag']] || '').trim() || parsed.activityTag || '';
+    var groupTag = String(row[h['Group Tag']] || '').trim() || parsed.groupTag || groupName || '';
+    var templateTagId = String(row[h['Template Tag ID']] || '').trim();
+    var triggerIds = parseCsvIds_(row[h['Trigger IDs']]);
+
+    if (!name || !activityTag) {
+      var msgMissing = 'Missing required fields: Activity Name and/or Activity Tag.';
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Needs Fix: ' + msgMissing);
+      errors.push(buildFloodlightErrorRow_(rowNumber, name, activityTag, templateTagId, msgMissing, eventSnippet));
+      return;
+    }
+
+    if (!templateTagId) {
+      var msgTemplateRequired = 'Template Tag ID is required.';
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Needs Fix: ' + msgTemplateRequired);
+      errors.push(buildFloodlightErrorRow_(rowNumber, name, activityTag, templateTagId, msgTemplateRequired, eventSnippet));
+      return;
+    }
+
+    if (!findFloodlightTemplateTagById_(cv, templateTagId)) {
+      var msgTemplateInvalid = 'Template Tag ID not found or not a Floodlight tag (flc).';
+      setFloodlightImportResult_(sheet, rowNumber, h, 'Needs Fix: ' + msgTemplateInvalid);
+      errors.push(buildFloodlightErrorRow_(rowNumber, name, activityTag, templateTagId, msgTemplateInvalid, eventSnippet));
+      return;
+    }
+
+    var readyMsg = triggerIds.length
+      ? 'Ready: Valid template and required fields.'
+      : 'Ready: No Trigger IDs (tag will be created without firing triggers).';
+
+    // Touch a parsed group tag so users can spot when parser found a value.
+    if (groupTag && !String(row[h['Group Tag']] || '').trim()) {
+      sheet.getRange(rowNumber, h['Group Tag'] + 1).setValue(groupTag);
+    }
+    setFloodlightImportResult_(sheet, rowNumber, h, readyMsg);
+    ready++;
+  });
+
+  return { ready: ready, errors: errors };
+}
+
+function buildFloodlightErrorRow_(sourceRow, activityName, activityTag, templateTagId, reason, eventSnippet) {
+  var snippet = String(eventSnippet || '').replace(/\s+/g, ' ').trim();
+  if (snippet.length > 240) snippet = snippet.slice(0, 240) + '...';
+  return [
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
+    sourceRow,
+    String(activityName || ''),
+    String(activityTag || ''),
+    String(templateTagId || ''),
+    String(reason || ''),
+    snippet
+  ];
+}
+
+function writeFloodlightErrorsTab_(rows) {
+  var sheet = getOrCreateSheet_(APP.SHEETS.FLOODLIGHT_ERRORS, APP.TAB_COLORS.PURPLE);
+  sheet.clear();
+
+  var headers = [
+    'Timestamp',
+    'Source Row',
+    'Activity Name',
+    'Activity Tag',
+    'Template Tag ID',
+    'Reason',
+    'Event Snippet (short)'
+  ];
+
+  writeTableSheet_(sheet, headers, rows || [], APP.TAB_COLORS.PURPLE);
 }
 
 function parseDcmSelectionToFloodlightRows_(values) {
@@ -2374,6 +2501,19 @@ function findFloodlightTemplateTag_(cv, preferredTagId) {
 
   for (var j = 0; j < tags.length; j++) {
     if (String(tags[j].type || '').toLowerCase() === 'flc') return tags[j];
+  }
+  return null;
+}
+
+function findFloodlightTemplateTagById_(cv, preferredTagId) {
+  var tagId = toId_(preferredTagId);
+  if (!tagId) return null;
+
+  var tags = asArray_(cv.tag);
+  for (var i = 0; i < tags.length; i++) {
+    if (toId_(tags[i].tagId) !== tagId) continue;
+    if (String(tags[i].type || '').toLowerCase() !== 'flc') return null;
+    return tags[i];
   }
   return null;
 }
